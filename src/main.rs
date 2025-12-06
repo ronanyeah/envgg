@@ -1,27 +1,124 @@
 use clap::Parser;
+use envgg::*;
 use futures::stream::{self, StreamExt};
-use std::collections::HashMap;
 use std::fs;
 use std::io::{self, BufRead};
 use std::path::PathBuf;
-use std::process::{Command, exit};
+use std::process::Command;
 
 #[derive(Parser)]
 #[command(name = "envgg")]
 #[command(about = "Run commands with environment variables from .env, .env.development, .env.staging, or .env.production", long_about = None)]
 struct Cli {
     #[arg(
+        short = 'l',
+        long = "list",
+        help = "List all secrets stored in the `envgg` namespace in system keyring"
+    )]
+    list: bool,
+
+    #[arg(short = 'o', long = "open", help = "Open the GUI manager")]
+    open: bool,
+
+    #[arg(
+        short = 'c',
+        long = "current",
+        help = "Print available environment variable names from suppported .env files in current folder"
+    )]
+    current: bool,
+
+    #[arg(
         trailing_var_arg = true,
         allow_hyphen_values = true,
-        required = true,
-        help = "Arguments: [env] command...\n\nWhere env is optional and can be: d, development, s, staging, p, production\n\nExamples:\nenvgg npm start          # .env\nenvgg d npm start        # .env.development\nenvgg p tsx src/index.ts # .env.production"
+        required = false,
+        help = "Arguments: [env] command...
+
+Where env is optional and can be: [d, development, s, staging, p, production]
+
+Examples:
+envgg npm start             # .env
+envgg development npm start # .env.development
+envgg d npm start           # .env.development
+envgg p tsx src/index.ts    # .env.production"
     )]
     args: Vec<String>,
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> anyhow::Result<()> {
+    #[cfg(target_os = "linux")]
+    rust_native_keyring::stores::use_dbus_secret_service_store(&Default::default())?;
+
+    #[cfg(target_os = "macos")]
+    rust_native_keyring::stores::use_apple_native_store(&Default::default())?;
+
+    #[cfg(target_os = "windows")]
+    rust_native_keyring::stores::use_windows_native_store(&Default::default())?;
+
     let cli = Cli::parse();
+
+    // Handle list flag
+    if cli.list {
+        match list_secrets().await {
+            Ok(secrets) => {
+                for secret in secrets {
+                    println!("{}", secret);
+                }
+                return Ok(());
+            }
+            Err(e) => {
+                anyhow::bail!("Error listing secrets: {}", e);
+            }
+        }
+    }
+
+    // Handle open flag
+    if cli.open {
+        ui::open_secrets_viewer().await;
+        return Ok(());
+    }
+
+    // Handle current flag
+    if cli.current {
+        let mut env_files = vec![
+            PathBuf::from(".env"),
+            PathBuf::from(".env.development"),
+            PathBuf::from(".env.staging"),
+            PathBuf::from(".env.production"),
+        ];
+
+        env_files.retain(|f| f.exists());
+
+        if env_files.is_empty() {
+            println!("No .env files found in current directory");
+        } else {
+            println!("{} .env file(s) found", env_files.len());
+            for path in env_files {
+                let Some(name) = path.file_name().and_then(|f| f.to_str()) else {
+                    continue;
+                };
+                if path.exists() {
+                    match get_env_var_names_from_file(&path) {
+                        Ok(var_names) => {
+                            if var_names.is_empty() {
+                                println!("\n{}: No variables", name);
+                            } else {
+                                println!("\n{}:", name);
+                                for var_name in var_names {
+                                    println!("{}", var_name);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Error reading {}: {}", name, e);
+                        }
+                    }
+                }
+            }
+        };
+
+        return Ok(());
+    }
 
     // Check if first argument is an environment specifier
     let valid_envs = ["d", "development", "s", "staging", "p", "production"];
@@ -34,8 +131,7 @@ async fn main() {
     };
 
     if command.is_empty() {
-        eprintln!("Error: No command specified");
-        exit(1);
+        anyhow::bail!("Error: No command specified");
     }
 
     // Construct the env file path based on whether an environment was specified
@@ -58,29 +154,15 @@ async fn main() {
     };
 
     // Read and parse the env file
-    let env_vars = match read_env_file(&env_path).await {
-        Ok(vars) => vars,
-        Err(e) => {
-            eprintln!("Error reading {}: {}", env_path.to_string_lossy(), e);
-            exit(1);
-        }
-    };
+    let env_vars = read_env_file(&env_path).await?;
 
     // Execute the command with environment variables
-    let status = Command::new(&command[0])
+    Command::new(&command[0])
         .args(&command[1..])
         .envs(env_vars)
-        .status();
+        .status()?;
 
-    match status {
-        Ok(exit_status) => {
-            exit(exit_status.code().unwrap_or(1));
-        }
-        Err(e) => {
-            eprintln!("Error executing command: {}", e);
-            exit(1);
-        }
-    }
+    Ok(())
 }
 
 async fn read_env_file(path: &PathBuf) -> anyhow::Result<Vec<(String, String)>> {
@@ -90,32 +172,23 @@ async fn read_env_file(path: &PathBuf) -> anyhow::Result<Vec<(String, String)>> 
 
     let env_vars = stream::iter(lines)
         .filter_map(|line| async move {
-            let trimmed = line.trim();
-
-            // Skip empty lines and comments (lines starting with #)
-            if trimmed.is_empty() || trimmed.starts_with('#') {
-                return None;
-            }
-
-            // Case 1: KEY=VALUE format
-            if let Some(pos) = trimmed.find('=') {
-                let key = trimmed[..pos].trim().to_string();
-                let value = trimmed[pos + 1..].trim().to_string();
-
-                // Remove quotes if present
-                let value = if (value.starts_with('"') && value.ends_with('"'))
-                    || (value.starts_with('\'') && value.ends_with('\''))
-                {
-                    value[1..value.len() - 1].to_string()
-                } else {
-                    value
-                };
-
-                Some((key, value))
-            } else {
-                // Case 2: KEY only (no =) - fetch from keyring
-                let key = trimmed.to_string();
-                match get_secret_from_keyring(&key).await {
+            match parse_env_line(&line) {
+                EnvLine::Comment => None,
+                EnvLine::Direct { key, value } => Some((key, value)),
+                EnvLine::Alias { key, keyring_key } => {
+                    match get_secret_from_keyring(&keyring_key).await {
+                        Ok(secret_value) => Some((key, secret_value)),
+                        Err(e) => {
+                            eprintln!(
+                                "Warning: Failed to get secret for '{}' from keyring: {}",
+                                keyring_key, e
+                            );
+                            eprintln!("Skipping environment variable '{}'.", key);
+                            None
+                        }
+                    }
+                }
+                EnvLine::Lookup { key } => match get_secret_from_keyring(&key).await {
                     Ok(value) => Some((key, value)),
                     Err(e) => {
                         eprintln!(
@@ -125,32 +198,11 @@ async fn read_env_file(path: &PathBuf) -> anyhow::Result<Vec<(String, String)>> 
                         eprintln!("Skipping this environment variable.");
                         None
                     }
-                }
+                },
             }
         })
         .collect::<Vec<_>>()
         .await;
 
     Ok(env_vars)
-}
-
-async fn get_secret_from_keyring(target: &str) -> anyhow::Result<String> {
-    let ss = secret_service::SecretService::connect(secret_service::EncryptionType::Dh).await?;
-    let collection = ss.get_default_collection().await?;
-    let notes = collection
-        .search_items(HashMap::from([
-            ("account", target),
-            ("service", "Env"),
-            ("xdg:schema", "org.freedesktop.Secret.Generic"),
-        ]))
-        .await?;
-
-    match notes.len() {
-        0 => Err(anyhow::anyhow!("Secret not found")),
-        1 => {
-            let secret = notes.first().expect("???").get_secret().await?;
-            Ok(String::from_utf8(secret)?)
-        }
-        n => Err(anyhow::anyhow!("Multiple matches: {}", n)),
-    }
 }
