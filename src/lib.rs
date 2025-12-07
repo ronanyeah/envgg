@@ -1,5 +1,6 @@
 use anyhow::Context;
-use std::collections::{HashMap, HashSet};
+use indexmap::IndexSet;
+use std::collections::HashMap;
 use std::fs;
 use std::io::{self, BufRead};
 use std::path::PathBuf;
@@ -53,11 +54,10 @@ pub fn parse_env_line(line: &str) -> EnvLine {
     }
 }
 
-pub fn get_env_var_names_from_file(path: &PathBuf) -> anyhow::Result<HashSet<String>> {
+pub fn get_env_var_names_from_file(path: &PathBuf) -> anyhow::Result<IndexSet<String>> {
     let lines = read_env_file(path)?;
 
-    // TODO: Doesn't maintain order
-    let var_names: HashSet<String> = lines
+    let var_names: IndexSet<String> = lines
         .into_iter()
         .filter_map(|line| match line {
             EnvLine::Comment => None,
