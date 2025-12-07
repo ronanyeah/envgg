@@ -314,7 +314,7 @@ impl SecretsViewer {
         let task =
             cx.spawn_in(
                 window,
-                async move |view_entity, window| match delete_secret_from_keyring(&name).await {
+                async move |view_entity, window| match delete_secret_from_keyring(&name) {
                     Ok(_) => {
                         Self::refresh_secrets_with_notification(
                             view_entity,
@@ -341,7 +341,7 @@ impl SecretsViewer {
         let task =
             cx.spawn_in(
                 window,
-                async move |view_entity, window| match get_secret_from_keyring(&name).await {
+                async move |view_entity, window| match get_secret_from_keyring(&name) {
                     Ok(value) => {
                         _ = view_entity.update_in(window, move |_, window, cx| {
                             cx.write_to_clipboard(gpui::ClipboardItem::new_string(value));
@@ -370,7 +370,7 @@ impl SecretsViewer {
         secret_name: String,
         operation: &str,
     ) {
-        match crate::list_secrets().await {
+        match crate::list_secret_labels() {
             Ok(secrets) => {
                 let view_weak = view_entity.clone();
                 _ = view_entity.update_in(window, move |view_ref, window, cx| {
@@ -542,7 +542,7 @@ impl SecretsViewer {
     ) {
         let task = cx.spawn_in(
             window,
-            async move |view_entity, window| match add_secret_to_keyring(&key, &value).await {
+            async move |view_entity, window| match add_secret_to_keyring(&key, &value) {
                 Ok(_) => {
                     Self::refresh_secrets_with_notification(view_entity, window, key, "added")
                         .await;
@@ -634,7 +634,7 @@ impl Render for AppRoot {
 }
 
 pub async fn open_secrets_viewer() {
-    let secrets = match crate::list_secrets().await {
+    let secrets = match crate::list_secret_labels() {
         Ok(secrets) => secrets,
         Err(e) => {
             panic!("Error loading secrets: {}", e);

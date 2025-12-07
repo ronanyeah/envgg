@@ -1,5 +1,5 @@
 use anyhow::Context;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, BufRead};
 use std::path::PathBuf;
@@ -15,6 +15,7 @@ pub enum EnvLine {
     Lookup { key: String },
 }
 
+// TODO: should error for malformed entries
 pub fn parse_env_line(line: &str) -> EnvLine {
     let trimmed = line.trim();
 
@@ -52,14 +53,13 @@ pub fn parse_env_line(line: &str) -> EnvLine {
     }
 }
 
-pub fn get_env_var_names_from_file(path: &PathBuf) -> anyhow::Result<Vec<String>> {
-    let file = fs::File::open(path)?;
-    let reader = io::BufReader::new(file);
-    let lines: Vec<String> = reader.lines().collect::<Result<_, _>>()?;
+pub fn get_env_var_names_from_file(path: &PathBuf) -> anyhow::Result<HashSet<String>> {
+    let lines = read_env_file(path)?;
 
-    let var_names: Vec<String> = lines
-        .iter()
-        .filter_map(|line| match parse_env_line(line) {
+    // TODO: Doesn't maintain order
+    let var_names: HashSet<String> = lines
+        .into_iter()
+        .filter_map(|line| match line {
             EnvLine::Comment => None,
             EnvLine::Alias { key, .. } => Some(key),
             EnvLine::Direct { key, .. } => Some(key),
@@ -70,24 +70,34 @@ pub fn get_env_var_names_from_file(path: &PathBuf) -> anyhow::Result<Vec<String>
     Ok(var_names)
 }
 
-pub async fn add_secret_to_keyring(key: &str, value: &str) -> anyhow::Result<()> {
+pub fn read_env_file(path: &PathBuf) -> anyhow::Result<Vec<EnvLine>> {
+    let file = fs::File::open(path)?;
+    let reader = io::BufReader::new(file);
+    let lines: Vec<String> = reader.lines().collect::<Result<_, _>>()?;
+
+    let var_names = lines.iter().map(|line| parse_env_line(line)).collect();
+
+    Ok(var_names)
+}
+
+pub fn add_secret_to_keyring(key: &str, value: &str) -> anyhow::Result<()> {
     let entry = keyring_core::Entry::new(TAG, key)?;
     entry.set_password(value)?;
     Ok(())
 }
 
-pub async fn delete_secret_from_keyring(key: &str) -> anyhow::Result<()> {
+pub fn delete_secret_from_keyring(key: &str) -> anyhow::Result<()> {
     let entry = keyring_core::Entry::new(TAG, key)?;
     entry.delete_credential()?;
     Ok(())
 }
 
-pub async fn list_secrets() -> anyhow::Result<Vec<String>> {
+pub fn list_secret_labels() -> anyhow::Result<Vec<String>> {
     let search_params = HashMap::from([("service", TAG)]);
 
     let items = keyring_core::Entry::search(&search_params)?;
 
-    let mut secret_names = items
+    let secret_names = items
         .iter()
         .map(|item| {
             let attributes = item.get_attributes()?;
@@ -96,11 +106,10 @@ pub async fn list_secrets() -> anyhow::Result<Vec<String>> {
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    secret_names.sort();
     Ok(secret_names)
 }
 
-pub async fn get_secret_from_keyring(target: &str) -> anyhow::Result<String> {
+pub fn get_secret_from_keyring(target: &str) -> anyhow::Result<String> {
     let entry = keyring_core::Entry::new(TAG, target)?;
     let password = entry.get_password()?;
     Ok(password)

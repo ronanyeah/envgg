@@ -1,8 +1,10 @@
 use clap::Parser;
-use envgg::*;
+use envgg::{
+    EnvLine, get_env_var_names_from_file, get_secret_from_keyring, list_secret_labels,
+    read_env_file, ui,
+};
 use futures::stream::{self, StreamExt};
-use std::fs;
-use std::io::{self, BufRead};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -59,10 +61,10 @@ async fn main() -> anyhow::Result<()> {
 
     // Handle list flag
     if cli.list {
-        match list_secrets().await {
+        match list_secret_labels() {
             Ok(secrets) => {
-                for secret in secrets {
-                    println!("{}", secret);
+                for label in secrets {
+                    println!("{}", label);
                 }
                 return Ok(());
             }
@@ -154,7 +156,7 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // Read and parse the env file
-    let env_vars = read_env_file(&env_path).await?;
+    let env_vars = process_env_file(&env_path).await?;
 
     // Execute the command with environment variables
     Command::new(&command[0])
@@ -165,18 +167,17 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn read_env_file(path: &PathBuf) -> anyhow::Result<Vec<(String, String)>> {
-    let file = fs::File::open(path)?;
-    let reader = io::BufReader::new(file);
-    let lines: Vec<String> = reader.lines().collect::<Result<_, _>>()?;
+// If duplicate labels exist, the last entry will take precedence
+async fn process_env_file(path: &PathBuf) -> anyhow::Result<Vec<(String, String)>> {
+    let lines = read_env_file(path)?;
 
-    let env_vars = stream::iter(lines)
+    let env_map = stream::iter(lines)
         .filter_map(|line| async move {
-            match parse_env_line(&line) {
+            match line {
                 EnvLine::Comment => None,
                 EnvLine::Direct { key, value } => Some((key, value)),
                 EnvLine::Alias { key, keyring_key } => {
-                    match get_secret_from_keyring(&keyring_key).await {
+                    match get_secret_from_keyring(&keyring_key) {
                         Ok(secret_value) => Some((key, secret_value)),
                         Err(e) => {
                             eprintln!(
@@ -188,7 +189,7 @@ async fn read_env_file(path: &PathBuf) -> anyhow::Result<Vec<(String, String)>> 
                         }
                     }
                 }
-                EnvLine::Lookup { key } => match get_secret_from_keyring(&key).await {
+                EnvLine::Lookup { key } => match get_secret_from_keyring(&key) {
                     Ok(value) => Some((key, value)),
                     Err(e) => {
                         eprintln!(
@@ -201,8 +202,8 @@ async fn read_env_file(path: &PathBuf) -> anyhow::Result<Vec<(String, String)>> 
                 },
             }
         })
-        .collect::<Vec<_>>()
+        .collect::<HashMap<_, _>>()
         .await;
 
-    Ok(env_vars)
+    Ok(env_map.into_iter().collect())
 }
