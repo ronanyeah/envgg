@@ -14,34 +14,25 @@ use gpui_component::{
     v_flex,
 };
 use gpui_component_assets::Assets;
-use std::rc::Rc;
 
 #[derive(IntoElement)]
 struct SecretListItem {
     base: ListItem,
-    secret: Rc<SharedString>,
-    on_delete: Option<Box<dyn Fn(&str, &mut Window, &mut App) + 'static>>,
-    on_copy: Option<Box<dyn Fn(&str, &mut Window, &mut App) + 'static>>,
+    secret: SharedString,
+    viewer: Entity<SecretsViewer>,
 }
 
 impl SecretListItem {
-    pub fn new(id: impl Into<gpui::ElementId>, secret: Rc<SharedString>) -> Self {
+    pub fn new(
+        id: impl Into<gpui::ElementId>,
+        secret: SharedString,
+        viewer: Entity<SecretsViewer>,
+    ) -> Self {
         SecretListItem {
             secret,
             base: ListItem::new(id),
-            on_delete: None,
-            on_copy: None,
+            viewer,
         }
-    }
-
-    pub fn on_delete(mut self, handler: impl Fn(&str, &mut Window, &mut App) + 'static) -> Self {
-        self.on_delete = Some(Box::new(handler));
-        self
-    }
-
-    pub fn on_copy(mut self, handler: impl Fn(&str, &mut Window, &mut App) + 'static) -> Self {
-        self.on_copy = Some(Box::new(handler));
-        self
     }
 }
 
@@ -57,16 +48,14 @@ impl gpui_component::Selectable for SecretListItem {
 
 impl gpui::RenderOnce for SecretListItem {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let text_color = cx.theme().foreground;
+        let Self {
+            base,
+            secret,
+            viewer,
+        } = self;
+        let name = secret.to_string();
 
-        let secret_name = self.secret.to_string();
-        let secret_name_copy = secret_name.clone();
-        let secret_name_delete = secret_name.clone();
-        let on_delete = self.on_delete;
-        let on_copy = self.on_copy;
-
-        self.base
-            .px_2()
+        base.px_2()
             .py_1()
             .overflow_x_hidden()
             .border_1()
@@ -76,7 +65,7 @@ impl gpui::RenderOnce for SecretListItem {
                     .items_center()
                     .justify_between()
                     .gap_2()
-                    .text_color(text_color)
+                    .text_color(cx.theme().foreground)
                     .child(
                         h_flex().gap_2().child(
                             v_flex()
@@ -84,60 +73,51 @@ impl gpui::RenderOnce for SecretListItem {
                                 .max_w(px(500.))
                                 .overflow_x_hidden()
                                 .flex_nowrap()
-                                .child(Label::new(secret_name.clone()).whitespace_nowrap()),
+                                .child(Label::new(name.clone()).whitespace_nowrap()),
                         ),
                     )
                     .child(
                         h_flex()
                             .gap_2()
-                            .child(
-                                Button::new(SharedString::from(format!(
-                                    "copy-{}",
-                                    secret_name_copy
-                                )))
-                                .icon(IconName::Copy)
-                                .small()
-                                .on_click(
-                                    move |_, window, cx| {
-                                        if let Some(ref handler) = on_copy {
-                                            handler(&secret_name_copy, window, cx);
-                                        }
-                                    },
-                                ),
-                            )
-                            .child(
-                                Button::new(SharedString::from(format!(
-                                    "delete-{}",
-                                    secret_name_delete
-                                )))
-                                .icon(IconName::Close)
-                                .small()
-                                .on_click(
-                                    move |_, window, cx| {
-                                        if let Some(ref handler) = on_delete {
-                                            handler(&secret_name_delete, window, cx);
-                                        }
-                                    },
-                                ),
-                            ),
+                            .child({
+                                let name = name.clone();
+                                let viewer = viewer.clone();
+                                Button::new(SharedString::from(format!("copy-{}", name)))
+                                    .icon(IconName::Copy)
+                                    .small()
+                                    .on_click(move |_, window, cx| {
+                                        viewer.update(cx, |v, cx| {
+                                            v.handle_copy_secret(name.clone(), window, cx);
+                                        });
+                                    })
+                            })
+                            .child({
+                                Button::new(SharedString::from(format!("delete-{}", name)))
+                                    .icon(IconName::Close)
+                                    .small()
+                                    .on_click(move |_, window, cx| {
+                                        viewer.update(cx, |v, cx| {
+                                            v.show_delete_confirmation(name.clone(), window, cx);
+                                        });
+                                    })
+                            }),
                     ),
             )
     }
 }
 
 struct SecretListDelegate {
-    secrets: Vec<Rc<SharedString>>,
-    filtered_secrets: Vec<Rc<SharedString>>,
+    secrets: Vec<SharedString>,
+    filtered_secrets: Vec<SharedString>,
     query: SharedString,
-    on_delete: Option<Rc<dyn Fn(&str, &mut Window, &mut App) + 'static>>,
-    on_copy: Option<Rc<dyn Fn(&str, &mut Window, &mut App) + 'static>>,
+    viewer: Entity<SecretsViewer>,
 }
 
 impl SecretListDelegate {
-    fn new(secrets: Vec<String>) -> Self {
-        let secrets: Vec<Rc<_>> = secrets
+    fn new(secrets: Vec<String>, viewer: Entity<SecretsViewer>) -> Self {
+        let secrets: Vec<_> = secrets
             .into_iter()
-            .map(|name| Rc::new(SharedString::new(name)))
+            .map(|name| SharedString::new(name))
             .collect();
         let filtered_secrets = secrets.clone();
 
@@ -145,17 +125,17 @@ impl SecretListDelegate {
             secrets,
             filtered_secrets,
             query: "".into(),
-            on_delete: None,
-            on_copy: None,
+            viewer,
         }
     }
 
-    fn set_on_delete(&mut self, handler: impl Fn(&str, &mut Window, &mut App) + 'static) {
-        self.on_delete = Some(Rc::new(handler));
-    }
-
-    fn set_on_copy(&mut self, handler: impl Fn(&str, &mut Window, &mut App) + 'static) {
-        self.on_copy = Some(Rc::new(handler));
+    fn update_secrets(&mut self, secrets: Vec<String>) {
+        self.secrets = secrets
+            .into_iter()
+            .map(|name| SharedString::new(name))
+            .collect();
+        // Re-apply current filter
+        self.filter(self.query.clone());
     }
 
     fn filter(&mut self, query: impl Into<SharedString>) {
@@ -200,29 +180,14 @@ impl ListDelegate for SecretListDelegate {
     }
 
     fn render_item(
-        &self,
+        &mut self,
         ix: gpui_component::IndexPath,
         _: &mut Window,
-        _: &mut App,
+        _cx: &mut Context<'_, ListState<SecretListDelegate>>,
     ) -> Option<Self::Item> {
-        if let Some(secret) = self.filtered_secrets.get(ix.row) {
-            let mut item = SecretListItem::new(ix, secret.clone());
-            if let Some(ref on_delete) = self.on_delete {
-                let on_delete_clone = on_delete.clone();
-                item = item.on_delete(move |name, window, cx| {
-                    on_delete_clone(name, window, cx);
-                });
-            }
-            if let Some(ref on_copy) = self.on_copy {
-                let on_copy_clone = on_copy.clone();
-                item = item.on_copy(move |name, window, cx| {
-                    on_copy_clone(name, window, cx);
-                });
-            }
-            return Some(item);
-        }
-
-        None
+        self.filtered_secrets
+            .get(ix.row)
+            .map(|secret| SecretListItem::new(ix, secret.clone(), self.viewer.clone()))
     }
 
     fn loading(&self, _: &App) -> bool {
@@ -241,7 +206,8 @@ pub struct SecretsViewer {
 
 impl SecretsViewer {
     pub fn new(secrets: Vec<String>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let delegate = SecretListDelegate::new(secrets);
+        let viewer = cx.entity().clone();
+        let delegate = SecretListDelegate::new(secrets, viewer);
         let secrets_list = cx.new(|cx| ListState::new(delegate, window, cx).searchable(true));
 
         Self {
@@ -251,42 +217,16 @@ impl SecretsViewer {
     }
 
     pub fn view(secrets: Vec<String>, window: &mut Window, cx: &mut App) -> Entity<Self> {
-        let view = cx.new(|cx| Self::new(secrets, window, cx));
-        view.update(cx, |this, cx| {
-            this.setup_delete_handler(view.clone(), cx);
-            this.setup_copy_handler(view.clone(), cx);
-        });
-        view
-    }
-
-    fn setup_delete_handler(&mut self, view: Entity<Self>, cx: &mut Context<Self>) {
-        self.secrets_list.update(cx, |list, _| {
-            list.delegate_mut().set_on_delete(move |name, window, cx| {
-                view.update(cx, |this, cx| {
-                    this.show_delete_confirmation(name, window, cx, view.clone());
-                });
-            });
-        });
-    }
-
-    fn setup_copy_handler(&mut self, view: Entity<Self>, cx: &mut Context<Self>) {
-        self.secrets_list.update(cx, |list, _| {
-            list.delegate_mut().set_on_copy(move |name, window, cx| {
-                view.update(cx, |this, cx| {
-                    this.handle_copy_secret(name.to_string(), window, cx);
-                });
-            });
-        });
+        cx.new(|cx| Self::new(secrets, window, cx))
     }
 
     fn show_delete_confirmation(
         &mut self,
-        name: &str,
+        name: String,
         window: &mut Window,
-        cx: &mut App,
-        view: Entity<Self>,
+        cx: &mut Context<Self>,
     ) {
-        let name = name.to_string();
+        let view = cx.entity().clone();
 
         window.open_dialog(cx, move |dialog, _, _| {
             let name = name.clone();
@@ -372,9 +312,8 @@ impl SecretsViewer {
     ) {
         match crate::list_secret_labels() {
             Ok(secrets) => {
-                let view_weak = view_entity.clone();
                 _ = view_entity.update_in(window, move |view_ref, window, cx| {
-                    view_ref.refresh_delegate_with_secrets(secrets, view_weak.clone(), cx);
+                    view_ref.refresh_secrets(secrets, cx);
                     window.push_notification(
                         format!("Secret '{}' {} successfully", secret_name, operation),
                         cx,
@@ -392,30 +331,9 @@ impl SecretsViewer {
         }
     }
 
-    fn refresh_delegate_with_secrets(
-        &mut self,
-        secrets: Vec<String>,
-        view_weak: gpui::WeakEntity<Self>,
-        cx: &mut Context<Self>,
-    ) {
+    fn refresh_secrets(&mut self, secrets: Vec<String>, cx: &mut Context<Self>) {
         self.secrets_list.update(cx, |list, cx| {
-            let mut delegate = SecretListDelegate::new(secrets);
-            let view_weak_delete = view_weak.clone();
-            delegate.set_on_delete(move |name, window, cx| {
-                if let Some(v) = view_weak_delete.upgrade() {
-                    v.update(cx, |this, cx| {
-                        this.show_delete_confirmation(name, window, cx, v.clone());
-                    });
-                }
-            });
-            delegate.set_on_copy(move |name, window, cx| {
-                if let Some(v) = view_weak.upgrade() {
-                    v.update(cx, |this, cx| {
-                        this.handle_copy_secret(name.to_string(), window, cx);
-                    });
-                }
-            });
-            *list.delegate_mut() = delegate;
+            list.delegate_mut().update_secrets(secrets);
             cx.notify();
         });
     }
