@@ -115,10 +115,7 @@ struct SecretListDelegate {
 
 impl SecretListDelegate {
     fn new(secrets: Vec<String>, viewer: Entity<SecretsViewer>) -> Self {
-        let secrets: Vec<_> = secrets
-            .into_iter()
-            .map(|name| SharedString::new(name))
-            .collect();
+        let secrets: Vec<_> = secrets.into_iter().map(SharedString::new).collect();
         let filtered_secrets = secrets.clone();
 
         Self {
@@ -130,10 +127,7 @@ impl SecretListDelegate {
     }
 
     fn update_secrets(&mut self, secrets: Vec<String>) {
-        self.secrets = secrets
-            .into_iter()
-            .map(|name| SharedString::new(name))
-            .collect();
+        self.secrets = secrets.into_iter().map(SharedString::new).collect();
         // Re-apply current filter
         self.filter(self.query.clone());
     }

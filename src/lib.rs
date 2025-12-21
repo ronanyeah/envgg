@@ -31,9 +31,9 @@ pub fn parse_env_line(line: &str) -> EnvLine {
         let value = trimmed[pos + 1..].trim().to_string();
 
         // Case: KEY=$OTHER - alias for keyring lookup
-        if value.starts_with('$') {
-            let keyring_key = value[1..].trim().to_string();
-            return EnvLine::Alias { key, keyring_key };
+        if let Some(val) = value.strip_prefix('$') {
+            let keyring_key = val.trim().to_string();
+            EnvLine::Alias { key, keyring_key }
         } else {
             // Case: KEY=value - direct value assignment
             // Remove quotes if present
@@ -45,12 +45,12 @@ pub fn parse_env_line(line: &str) -> EnvLine {
                 value
             };
 
-            return EnvLine::Direct { key, value };
+            EnvLine::Direct { key, value }
         }
     } else {
         // Case: KEY only (no =) - lookup from keyring
         let key = trimmed.to_string();
-        return EnvLine::Lookup { key };
+        EnvLine::Lookup { key }
     }
 }
 
