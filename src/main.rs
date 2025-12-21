@@ -55,7 +55,7 @@ async fn main() -> anyhow::Result<()> {
     keyring_core::set_default_store(apple_native_keyring_store::keychain::Store::new()?);
 
     #[cfg(target_os = "windows")]
-    keyring_core::set_default_store(windows_native_keyring_store::keychain::Store::new()?);
+    keyring_core::set_default_store(windows_native_keyring_store::store::Store::new()?);
 
     let cli = Cli::parse();
 
