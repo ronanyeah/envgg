@@ -30,15 +30,15 @@ pub fn parse_env_line(line: &str) -> EnvLine {
         let key = trimmed[..pos].trim().to_string();
         let value = trimmed[pos + 1..].trim().to_string();
 
-        // Case: KEY=$OTHER (unquoted) - alias for keyring lookup
-        if value.starts_with('$') && !value.starts_with("$") && !value.starts_with("'") {
+        // Case: KEY=$OTHER - alias for keyring lookup
+        if value.starts_with('$') {
             let keyring_key = value[1..].trim().to_string();
             return EnvLine::Alias { key, keyring_key };
         } else {
             // Case: KEY=value - direct value assignment
             // Remove quotes if present
             let value = if (value.starts_with('"') && value.ends_with('"'))
-                || (value.starts_with('"') && value.ends_with('"'))
+                || (value.starts_with('\'') && value.ends_with('\''))
             {
                 value[1..value.len() - 1].to_string()
             } else {
