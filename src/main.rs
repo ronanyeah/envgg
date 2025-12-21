@@ -49,13 +49,13 @@ envgg p tsx src/index.ts    # .env.production"
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     #[cfg(target_os = "linux")]
-    rust_native_keyring::stores::use_dbus_secret_service_store(&Default::default())?;
+    keyring_core::set_default_store(dbus_secret_service_keyring_store::Store::new()?);
 
     #[cfg(target_os = "macos")]
-    rust_native_keyring::stores::use_apple_native_store(&Default::default())?;
+    keyring_core::set_default_store(apple_native_keyring_store::keychain::Store::new()?);
 
     #[cfg(target_os = "windows")]
-    rust_native_keyring::stores::use_windows_native_store(&Default::default())?;
+    keyring_core::set_default_store(windows_native_keyring_store::keychain::Store::new()?);
 
     let cli = Cli::parse();
 
