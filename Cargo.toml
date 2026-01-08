@@ -5,14 +5,14 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.100"
-clap = { version = "4.5.53", features = ["derive"] }
+clap = { version = "4.5.54", features = ["derive"] }
 futures = "0.3.31"
 gpui = "0.2.2"
 gpui-component = "0.5.0"
 gpui-component-assets = "0.5.0"
-indexmap = "2.12.1"
-keyring-core = "0.7.1"
-tokio = { version = "1.48.0", features = ["full"] }
+indexmap = "2.13.0"
+keyring-core = "0.7.2"
+tokio = { version = "1.49.0", features = ["full"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 apple-native-keyring-store = { version = "0.2", features = ["keychain"] }
@@ -23,4 +23,4 @@ dbus-secret-service-keyring-store = { version = "0.3", features = [
 ] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-native-keyring-store = "0.4"
+windows-native-keyring-store = "0.5"

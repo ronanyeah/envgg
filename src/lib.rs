@@ -101,7 +101,11 @@ pub fn list_secret_labels() -> anyhow::Result<Vec<String>> {
         .iter()
         .map(|item| {
             let attributes = item.get_attributes()?;
-            let name = attributes.get("username").context("no username")?;
+            // Linux/Windows use "username", macOS uses "account"
+            let name = attributes
+                .get("username")
+                .or_else(|| attributes.get("account"))
+                .context("no key attribute")?;
             Ok::<_, anyhow::Error>(name.clone())
         })
         .collect::<Result<Vec<_>, _>>()?;
