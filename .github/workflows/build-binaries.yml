@@ -1,24 +1,26 @@
-name: build-binaries
-run-name: Building Rust binaries for all platforms
-on: workflow_dispatch
+name: release
+run-name: Build binaries and publish a release
+
+# Push a tag matching the Cargo.toml version (e.g. v0.1.0) to publish a release.
+# Running it manually only builds the archives, as run artifacts.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
 
 jobs:
   build:
     strategy:
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-            artifact-name: envgg-linux-x86_64
           - os: macos-latest
             target: x86_64-apple-darwin
-            artifact-name: envgg-macos-x86_64
           - os: macos-latest
             target: aarch64-apple-darwin
-            artifact-name: envgg-macos-aarch64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact-name: envgg-windows-x86_64
 
     runs-on: ${{ matrix.os }}
 
@@ -26,7 +28,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Linux dependencies
-        if: matrix.os == 'ubuntu-latest'
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libdbus-1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev
@@ -37,22 +39,40 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --locked --target ${{ matrix.target }}
 
-      - name: Prepare artifact (Unix)
-        if: matrix.os != 'windows-latest'
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
         run: |
-          mkdir -p artifact
-          cp target/${{ matrix.target }}/release/envgg artifact/
+          mkdir dist
+          tar -czf dist/envgg-${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release envgg
 
-      - name: Prepare artifact (Windows)
-        if: matrix.os == 'windows-latest'
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
         run: |
-          mkdir artifact
-          copy target\${{ matrix.target }}\release\envgg.exe artifact\
+          New-Item -ItemType Directory dist
+          Compress-Archive -Path target\${{ matrix.target }}\release\envgg.exe -DestinationPath dist\envgg-${{ matrix.target }}.zip
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact-name }}
-          path: artifact/
+          name: envgg-${{ matrix.target }}
+          path: dist/*
           retention-days: 30
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

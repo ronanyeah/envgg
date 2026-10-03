@@ -2,6 +2,16 @@
 
 Run commands with environment variables from `.env` files, with secrets resolved from your system keyring. A `.env` file lists a secret by name instead of containing its value, so it is safe to leave in your project.
 
+## Install
+
+With [cargo-binstall](https://github.com/cargo-bins/cargo-binstall):
+
+```bash
+cargo binstall --git https://github.com/ronanyeah/envgg envgg
+```
+
+Or download an archive for your platform from the [releases page](https://github.com/ronanyeah/envgg/releases).
+
 ## Usage
 
 ### Run a command
