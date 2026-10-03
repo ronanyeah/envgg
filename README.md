@@ -1,30 +1,53 @@
 # envgg
 
-Run commands with environment variables from `.env` files, with secrets resolved from your system keyring. The `.env` files only contain names, so they never hold secret values.
+Run commands with environment variables from `.env` files, with secrets resolved from your system keyring. A `.env` file lists a secret by name instead of containing its value, so it is safe to leave in your project.
 
 ## Usage
 
-```bash
-envgg -- npm start                # loads .env
-envgg development -- npm start    # loads .env.development
-envgg p -- tsx src/index.ts       # loads .env.production
-envgg --env-file .my-env -- npm start # loads a specific env file
+### Run a command
 
-envgg secrets # list the secrets stored in the keyring
-envgg set NAME      # add or update a secret (prompts, or reads stdin if piped)
-envgg delete NAME   # delete a secret (-y to skip the confirmation)
-envgg open    # open the GUI manager
-envgg vars    # print the variable names used by the .env files in this folder
+Everything after `--` is the command to run. An optional environment before it picks the env file:
+
+```bash
+envgg -- npm start                     # .env
+envgg development -- npm start         # .env.development
+envgg p -- tsx src/index.ts            # .env.production
+envgg --env-file .my-env -- npm start  # any other env file
+```
+
+| Environment | Short | File |
+|---|---|---|
+| `development` | `d` | `.env.development` |
+| `staging` | `s` | `.env.staging` |
+| `production` | `p` | `.env.production` |
+| `test` | `t` | `.env.test` |
+| `local` | `l` | `.env.local` |
+
+The command's exit code is passed through. On Linux and macOS it also replaces envgg, so signals reach it directly. `envgg run` is an optional spelling of the same thing: `envgg run p -- npm start`.
+
+If the command can't be run, envgg exits with 127 (not found) or 126 (not executable). It exits with 125 if envgg itself fails first, for example if the env file is missing.
+
+### Manage secrets
+
+```bash
+envgg secrets      # list the secrets in the keyring
+envgg set NAME     # add or update a secret
+envgg delete NAME  # delete a secret (-y to skip the confirmation)
+envgg open         # open the GUI manager
+```
+
+`set` prompts for the value, or reads it from stdin when piped (`printf %s "$VALUE" | envgg set NAME`). The value is never taken as an argument, so it stays out of your shell history.
+
+### Inspect and back up
+
+```bash
+envgg vars    # list the variable names used by the .env files in this folder
 envgg export  # write all secrets as plaintext to .env.bak (-f to overwrite)
 ```
 
-The environment is `development`, `staging`, `production`, `test` or `local` (or `d`, `s`, `p`, `t`, `l` for short), given as the first argument. To load any other file, pass its path with `--env-file`. The command to run goes after `--`. It replaces envgg, so its signals and exit code are its own. If it can't be started, envgg exits with 127 (not found) or 126 (not executable), and 125 if envgg itself failed. `envgg run p -- npm start` is the same as `envgg p -- npm start`.
-
 See [CLI.md](docs/CLI.md) for the full command reference.
 
----
-
-#### Env file format
+## Env file format
 
 ```bash
 # comment - will be ignored
