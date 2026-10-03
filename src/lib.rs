@@ -118,7 +118,7 @@ pub struct SecretInfo {
 }
 
 // Stored as unix seconds
-pub fn stamp_secret(
+fn stamp_secret(
     entry: &keyring_core::Entry,
     created: DateTime<Utc>,
     updated: DateTime<Utc>,
@@ -142,7 +142,7 @@ fn attribute<'a>(attributes: &'a HashMap<String, String>, key: &str) -> anyhow::
         .with_context(|| format!("missing '{key}'"))
 }
 
-pub fn parse_time(
+fn parse_time(
     attributes: &HashMap<String, String>,
     key: &str,
 ) -> anyhow::Result<DateTime<Utc>> {

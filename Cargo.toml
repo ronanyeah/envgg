@@ -2,11 +2,13 @@
 name = "envgg"
 version = "0.1.0"
 edition = "2024"
+description = "Run commands with environment variables from .env files, with secrets resolved from the system keyring"
 
 [dependencies]
 anyhow = "1.0.104"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 clap = { version = "4.6.7", features = ["derive"] }
+clap-markdown = "0.1.5"
 futures = "0.3.34"
 gpui = "0.2.2"
 gpui-component = "0.5.1"

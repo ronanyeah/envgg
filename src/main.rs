@@ -1,71 +1,158 @@
-use clap::Parser;
+use anyhow::Context;
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use envgg::{
     EnvLine, export_secrets, get_env_var_names_from_file, get_secret_from_keyring,
     list_secret_labels, read_env_file, ui,
 };
 use futures::stream::{self, StreamExt};
 use std::collections::HashMap;
+use std::io;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, ExitCode};
 
 #[derive(Parser)]
-#[command(name = "envgg")]
-#[command(about = "Run commands with environment variables from .env, .env.development, .env.staging, or .env.production", long_about = None)]
+#[command(
+    version,
+    about,
+    args_conflicts_with_subcommands = true,
+    subcommand_negates_reqs = true,
+    arg_required_else_help = true,
+    after_help = "Examples:
+  envgg -- npm start                            # .env
+  envgg development -- npm start                # .env.development
+  envgg p -- tsx src/index.ts                   # .env.production
+  envgg --env-file .my-unique-env -- npm start  # a specific env file
+  envgg run p -- tsx src/index.ts               # same as without `run`
+
+Exit codes when running a command:
+  its own    the command ran
+  125        envgg failed before running it
+  126        the command was found but could not be run
+  127        the command was not found"
+)]
 struct Cli {
-    #[arg(
-        short = 'l',
-        long = "list",
-        help = "List all secrets stored in the `envgg` namespace in system keyring"
-    )]
-    list: bool,
+    #[command(subcommand)]
+    command: Option<Cmd>,
 
-    #[arg(short = 'o', long = "open", help = "Open the GUI manager")]
-    open: bool,
+    #[command(flatten)]
+    run: RunArgs,
+}
 
-    #[arg(
-        short = 'e',
-        long = "export",
-        value_name = "FILE",
-        num_args = 0..=1,
-        default_missing_value = ".env.bak",
-        help = "Write all secrets as plaintext to FILE (default: .env.bak)"
-    )]
-    export: Option<PathBuf>,
+#[derive(Args)]
+struct RunArgs {
+    /// Environment to load from .env.<ENV>, also as d, s, p, t or l [default: .env]
+    env: Option<Env>,
 
-    #[arg(
-        short = 'f',
-        long = "force",
-        requires = "export",
-        help = "Overwrite the export file if it already exists"
-    )]
-    force: bool,
+    /// Load this env file instead of .env or .env.<ENV>
+    #[arg(long, value_name = "FILE", conflicts_with = "env")]
+    env_file: Option<PathBuf>,
 
-    #[arg(
-        short = 'c',
-        long = "current",
-        help = "Print available environment variable names from suppported .env files in current folder"
-    )]
-    current: bool,
+    /// Command and arguments to run (after `--`)
+    #[arg(last = true, required = true)]
+    cmd: Vec<String>,
+}
 
-    #[arg(
-        trailing_var_arg = true,
-        allow_hyphen_values = true,
-        required = false,
-        help = "Arguments: [env] command...
+#[derive(Subcommand)]
+enum Cmd {
+    /// Run a command with the variables from a .env file (same as omitting `run`)
+    Run(RunArgs),
 
-Where env is optional and can be: [d, development, s, staging, p, production]
+    /// List the secrets stored in the `envgg` namespace of the system keyring
+    Secrets,
 
-Examples:
-envgg npm start             # .env
-envgg development npm start # .env.development
-envgg d npm start           # .env.development
-envgg p tsx src/index.ts    # .env.production"
-    )]
-    args: Vec<String>,
+    /// Open the GUI manager
+    Open,
+
+    /// Print the variable names used by the .env files in the current folder
+    Vars,
+
+    /// Write all secrets as plaintext to a file
+    Export {
+        /// File to write
+        #[arg(default_value = ".env.bak")]
+        file: PathBuf,
+
+        /// Overwrite the file if it already exists
+        #[arg(short, long)]
+        force: bool,
+    },
+
+    /// Print this CLI's help as Markdown, used to generate README.md
+    #[command(hide = true)]
+    MarkdownHelp,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum Env {
+    #[value(alias = "d")]
+    Development,
+    #[value(alias = "s")]
+    Staging,
+    #[value(alias = "p")]
+    Production,
+    #[value(alias = "t")]
+    Test,
+    #[value(alias = "l")]
+    Local,
+}
+
+impl Env {
+    fn file(self) -> PathBuf {
+        PathBuf::from(match self {
+            Env::Development => ".env.development",
+            Env::Staging => ".env.staging",
+            Env::Production => ".env.production",
+            Env::Test => ".env.test",
+            Env::Local => ".env.local",
+        })
+    }
+}
+
+/// The command itself couldn't be started
+#[derive(Debug)]
+struct SpawnError(io::Error);
+
+impl std::fmt::Display for SpawnError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl std::error::Error for SpawnError {}
+
+// Same convention as env(1) and timeout(1)
+fn exit_code(error: &anyhow::Error, runs_command: bool) -> u8 {
+    match error.downcast_ref::<SpawnError>() {
+        Some(SpawnError(e)) if e.kind() == io::ErrorKind::NotFound => 127,
+        Some(_) => 126,
+        None if runs_command => 125,
+        None => 1,
+    }
 }
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> ExitCode {
+    let Cli { command, run } = Cli::parse();
+    let runs_command = matches!(command, None | Some(Cmd::Run(_)));
+
+    match dispatch(command, run).await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("Error: {error:?}");
+            ExitCode::from(exit_code(&error, runs_command))
+        }
+    }
+}
+
+async fn dispatch(command: Option<Cmd>, run_args: RunArgs) -> anyhow::Result<()> {
+    // Doesn't need the keyring, so it also works where none is available
+    if matches!(command, Some(Cmd::MarkdownHelp)) {
+        let options = clap_markdown::MarkdownOptions::new()
+            .title("envgg".to_string())
+            .show_footer(false);
+        print!("{}", clap_markdown::help_markdown_custom::<Cli>(&options));
+        return Ok(());
+    }
     #[cfg(target_os = "linux")]
     keyring_core::set_default_store(dbus_secret_service_keyring_store::Store::new()?);
 
@@ -75,125 +162,112 @@ async fn main() -> anyhow::Result<()> {
     #[cfg(target_os = "windows")]
     keyring_core::set_default_store(windows_native_keyring_store::store::Store::new()?);
 
-    let cli = Cli::parse();
-
-    // Handle list flag
-    if cli.list {
-        match list_secret_labels() {
-            Ok(secrets) => {
-                for label in secrets {
-                    println!("{}", label);
-                }
-                return Ok(());
+    match command {
+        None => run(run_args).await,
+        Some(Cmd::Run(args)) => run(args).await,
+        Some(Cmd::Secrets) => {
+            for label in list_secret_labels().context("failed to list secrets")? {
+                println!("{label}");
             }
-            Err(e) => {
-                anyhow::bail!("Error listing secrets: {}", e);
-            }
+            Ok(())
         }
+        Some(Cmd::Open) => {
+            ui::open_secrets_viewer().await;
+            Ok(())
+        }
+        Some(Cmd::Vars) => {
+            print_vars();
+            Ok(())
+        }
+        Some(Cmd::Export { file, force }) => {
+            let count = export_secrets(&file, force)?;
+            println!("Exported {count} secret(s) to {}", file.display());
+            Ok(())
+        }
+        Some(Cmd::MarkdownHelp) => unreachable!("handled before the keyring is set up"),
     }
+}
 
-    if let Some(path) = cli.export {
-        let count = export_secrets(&path, cli.force)?;
-        println!("Exported {} secret(s) to {}", count, path.display());
-        return Ok(());
-    }
+async fn run(
+    RunArgs { env, env_file, cmd }: RunArgs,
+) -> anyhow::Result<()> {
+    let (program, args) = cmd
+        .split_first()
+        .context("no command specified, expected: envgg [ENV] -- <CMD>...")?;
 
-    // Handle open flag
-    if cli.open {
-        ui::open_secrets_viewer().await;
-        return Ok(());
-    }
-
-    // Handle current flag
-    if cli.current {
-        let mut env_files = vec![
-            PathBuf::from(".env"),
-            PathBuf::from(".env.development"),
-            PathBuf::from(".env.staging"),
-            PathBuf::from(".env.production"),
-        ];
-
-        env_files.retain(|f| f.exists());
-
-        if env_files.is_empty() {
-            println!("No .env files found in current directory");
-        } else {
-            println!("{} .env file(s) found", env_files.len());
-            for path in env_files {
-                let Some(name) = path.file_name().and_then(|f| f.to_str()) else {
-                    continue;
-                };
-                if path.exists() {
-                    match get_env_var_names_from_file(&path) {
-                        Ok(var_names) => {
-                            if var_names.is_empty() {
-                                println!("\n{}: No variables", name);
-                            } else {
-                                println!("\n{}:", name);
-                                for var_name in var_names {
-                                    println!("{}", var_name);
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!("Error reading {}: {}", name, e);
-                        }
-                    }
-                }
-            }
-        };
-
-        return Ok(());
-    }
-
-    // Check if first argument is an environment specifier
-    let valid_envs = ["d", "development", "s", "staging", "p", "production"];
-    let (env, command) = if !cli.args.is_empty() && valid_envs.contains(&cli.args[0].as_str()) {
-        // First arg is an environment
-        (Some(cli.args[0].clone()), &cli.args[1..])
-    } else {
-        // No environment specified, all args are the command
-        (None, &cli.args[..])
+    let env_path = match (env_file, env) {
+        (Some(path), _) => path,
+        (None, Some(env)) => env.file(),
+        (None, None) => PathBuf::from(".env"),
     };
-
-    if command.is_empty() {
-        anyhow::bail!("Error: No command specified");
-    }
-
-    // Construct the env file path based on whether an environment was specified
-    let env_path = match env {
-        None => {
-            // No environment specified, use .env
-            PathBuf::from(".env")
-        }
-        Some(env) => {
-            // Normalize short form to long form
-            let env_name = match env.as_str() {
-                "d" => "development",
-                "s" => "staging",
-                "p" => "production",
-                _ => &env,
-            };
-            // Use .env.{environment}
-            PathBuf::from(format!(".env.{}", env_name))
-        }
-    };
-
-    // Read and parse the env file
+    anyhow::ensure!(
+        env_path.exists(),
+        "env file '{}' not found",
+        env_path.display()
+    );
     let env_vars = process_env_file(&env_path).await?;
 
-    // Execute the command with environment variables
-    Command::new(&command[0])
-        .args(&command[1..])
-        .envs(env_vars)
-        .status()?;
+    let mut command = Command::new(program);
+    command.args(args).envs(env_vars);
+    exec(command, program)
+}
 
-    Ok(())
+// Replaces this process, so signals and exit codes are the command's own
+#[cfg(unix)]
+fn exec(mut command: Command, program: &str) -> anyhow::Result<()> {
+    use std::os::unix::process::CommandExt;
+    // Only returns if the command couldn't be started
+    Err(spawn_failure(program, command.exec()))
+}
+
+// No exec on this platform, so wait and pass the exit code through
+#[cfg(not(unix))]
+fn exec(mut command: Command, program: &str) -> anyhow::Result<()> {
+    let status = command
+        .status()
+        .map_err(|e| spawn_failure(program, e))?;
+    std::process::exit(status.code().unwrap_or(1))
+}
+
+fn spawn_failure(program: &str, error: io::Error) -> anyhow::Error {
+    anyhow::Error::new(SpawnError(error)).context(format!("failed to run '{program}'"))
+}
+
+fn print_vars() {
+    let env_files: Vec<PathBuf> = [".env"]
+        .map(PathBuf::from)
+        .into_iter()
+        .chain(Env::value_variants().iter().map(|env| env.file()))
+        .filter(|path| path.exists())
+        .collect();
+
+    if env_files.is_empty() {
+        println!("No .env files found in current directory");
+        return;
+    }
+
+    println!("{} .env file(s) found", env_files.len());
+    for path in env_files {
+        let Some(name) = path.file_name().and_then(|f| f.to_str()) else {
+            continue;
+        };
+        match get_env_var_names_from_file(&path) {
+            Ok(var_names) if var_names.is_empty() => println!("\n{name}: No variables"),
+            Ok(var_names) => {
+                println!("\n{name}:");
+                for var_name in var_names {
+                    println!("{var_name}");
+                }
+            }
+            Err(e) => eprintln!("Error reading {name}: {e}"),
+        }
+    }
 }
 
 // If duplicate labels exist, the last entry will take precedence
 async fn process_env_file(path: &PathBuf) -> anyhow::Result<Vec<(String, String)>> {
-    let lines = read_env_file(path)?;
+    let lines = read_env_file(path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
 
     let env_map = stream::iter(lines)
         .filter_map(|line| async move {
