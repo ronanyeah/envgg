@@ -7,6 +7,8 @@ This document contains the help content for the `envgg` command-line program.
 * [`envgg`↴](#envgg)
 * [`envgg run`↴](#envgg-run)
 * [`envgg secrets`↴](#envgg-secrets)
+* [`envgg set`↴](#envgg-set)
+* [`envgg delete`↴](#envgg-delete)
 * [`envgg open`↴](#envgg-open)
 * [`envgg vars`↴](#envgg-vars)
 * [`envgg export`↴](#envgg-export)
@@ -35,6 +37,8 @@ Exit codes when running a command:
 
 * `run` — Run a command with the variables from a .env file (same as omitting `run`)
 * `secrets` — List the secrets stored in the `envgg` namespace of the system keyring
+* `set` — Add or update a secret (the value is prompted for, or read from stdin if piped)
+* `delete` — Delete a secret
 * `open` — Open the GUI manager
 * `vars` — Print the variable names used by the .env files in the current folder
 * `export` — Write all secrets as plaintext to a file
@@ -78,6 +82,34 @@ Run a command with the variables from a .env file (same as omitting `run`)
 List the secrets stored in the `envgg` namespace of the system keyring
 
 **Usage:** `envgg secrets`
+
+
+
+## `envgg set`
+
+Add or update a secret (the value is prompted for, or read from stdin if piped)
+
+**Usage:** `envgg set <NAME>`
+
+###### **Arguments:**
+
+* `<NAME>` — Secret name, in UPPER_SNAKE_CASE
+
+
+
+## `envgg delete`
+
+Delete a secret
+
+**Usage:** `envgg delete [OPTIONS] <NAME>`
+
+###### **Arguments:**
+
+* `<NAME>` — Name of the secret to delete
+
+###### **Options:**
+
+* `-y`, `--yes` — Delete without asking for confirmation
 
 
 

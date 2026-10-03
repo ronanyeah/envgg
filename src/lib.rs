@@ -142,10 +142,7 @@ fn attribute<'a>(attributes: &'a HashMap<String, String>, key: &str) -> anyhow::
         .with_context(|| format!("missing '{key}'"))
 }
 
-fn parse_time(
-    attributes: &HashMap<String, String>,
-    key: &str,
-) -> anyhow::Result<DateTime<Utc>> {
+fn parse_time(attributes: &HashMap<String, String>, key: &str) -> anyhow::Result<DateTime<Utc>> {
     DateTime::from_timestamp(attribute(attributes, key)?.parse()?, 0)
         .with_context(|| format!("'{key}' out of range"))
 }
@@ -170,6 +167,13 @@ pub fn delete_secret_from_keyring(key: &str) -> anyhow::Result<()> {
     let entry = keyring_core::Entry::new(TAG, key)?;
     entry.delete_credential()?;
     Ok(())
+}
+
+/// SCREAMING_SNAKE_CASE: starts with a letter, then only A-Z, 0-9 or `_`
+pub fn is_valid_env_var_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars.next().is_some_and(|c| c.is_ascii_uppercase())
+        && chars.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
 }
 
 fn search_attributes() -> anyhow::Result<Vec<HashMap<String, String>>> {

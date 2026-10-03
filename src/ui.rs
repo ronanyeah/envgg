@@ -449,7 +449,7 @@ impl SecretsViewer {
                     let value = value_input.read(cx).text().to_string();
 
 
-                    if !Self::is_valid_env_var_name(&key) {
+                    if !crate::is_valid_env_var_name(&key) {
                         window.push_notification(
                             "Key must be in SCREAMING_CASE (uppercase letters, numbers, and underscores only, starting with a letter)",
                             cx,
@@ -469,29 +469,6 @@ impl SecretsViewer {
                     });
                 }),
         ]
-    }
-
-    fn is_valid_env_var_name(name: &str) -> bool {
-        let mut chars = name.chars();
-
-        // First character must be a letter (A-Z)
-        if let Some(first) = chars.next() {
-            if !first.is_ascii_uppercase() {
-                return false;
-            }
-        } else {
-            return false;
-        }
-
-        // Remaining characters must be uppercase letters, digits, or underscores
-        for ch in chars {
-            if !ch.is_ascii_uppercase() && !ch.is_ascii_digit() && ch != '_' {
-                return false;
-            }
-        }
-
-        // Check if it's actually in SCREAMING_CASE (contains at least one uppercase)
-        name.chars().any(|c| c.is_ascii_uppercase())
     }
 
     fn handle_add_secret(

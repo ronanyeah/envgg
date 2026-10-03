@@ -1,12 +1,13 @@
 use anyhow::Context;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use envgg::{
-    EnvLine, export_secrets, get_env_var_names_from_file, get_secret_from_keyring,
+    EnvLine, add_secret_to_keyring, delete_secret_from_keyring, export_secrets,
+    get_env_var_names_from_file, get_secret_from_keyring, is_valid_env_var_name,
     list_secret_labels, read_env_file, ui,
 };
 use futures::stream::{self, StreamExt};
 use std::collections::HashMap;
-use std::io;
+use std::io::{self, IsTerminal, Read, Write};
 use std::path::PathBuf;
 use std::process::{Command, ExitCode};
 
@@ -59,6 +60,22 @@ enum Cmd {
 
     /// List the secrets stored in the `envgg` namespace of the system keyring
     Secrets,
+
+    /// Add or update a secret (the value is prompted for, or read from stdin if piped)
+    Set {
+        /// Secret name, in UPPER_SNAKE_CASE
+        name: String,
+    },
+
+    /// Delete a secret
+    Delete {
+        /// Name of the secret to delete
+        name: String,
+
+        /// Delete without asking for confirmation
+        #[arg(short, long)]
+        yes: bool,
+    },
 
     /// Open the GUI manager
     Open,
@@ -171,6 +188,8 @@ async fn dispatch(command: Option<Cmd>, run_args: RunArgs) -> anyhow::Result<()>
             }
             Ok(())
         }
+        Some(Cmd::Set { name }) => set_secret(&name),
+        Some(Cmd::Delete { name, yes }) => delete_secret(&name, yes),
         Some(Cmd::Open) => {
             ui::open_secrets_viewer().await;
             Ok(())
@@ -188,9 +207,7 @@ async fn dispatch(command: Option<Cmd>, run_args: RunArgs) -> anyhow::Result<()>
     }
 }
 
-async fn run(
-    RunArgs { env, env_file, cmd }: RunArgs,
-) -> anyhow::Result<()> {
+async fn run(RunArgs { env, env_file, cmd }: RunArgs) -> anyhow::Result<()> {
     let (program, args) = cmd
         .split_first()
         .context("no command specified, expected: envgg [ENV] -- <CMD>...")?;
@@ -223,14 +240,56 @@ fn exec(mut command: Command, program: &str) -> anyhow::Result<()> {
 // No exec on this platform, so wait and pass the exit code through
 #[cfg(not(unix))]
 fn exec(mut command: Command, program: &str) -> anyhow::Result<()> {
-    let status = command
-        .status()
-        .map_err(|e| spawn_failure(program, e))?;
+    let status = command.status().map_err(|e| spawn_failure(program, e))?;
     std::process::exit(status.code().unwrap_or(1))
 }
 
 fn spawn_failure(program: &str, error: io::Error) -> anyhow::Error {
     anyhow::Error::new(SpawnError(error)).context(format!("failed to run '{program}'"))
+}
+
+// The value is never an argument, so it stays out of shell history and `ps`
+fn set_secret(name: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        is_valid_env_var_name(name),
+        "'{name}' is not a valid name, use UPPER_SNAKE_CASE"
+    );
+
+    let value = if io::stdin().is_terminal() {
+        rpassword::prompt_password(format!("Value for {name}: "))?
+    } else {
+        let mut input = String::new();
+        io::stdin().read_to_string(&mut input)?;
+        // Piping adds one trailing newline that isn't part of the value
+        let value = input.strip_suffix('\n').unwrap_or(&input);
+        value.strip_suffix('\r').unwrap_or(value).to_string()
+    };
+    anyhow::ensure!(!value.is_empty(), "empty value, nothing stored");
+
+    add_secret_to_keyring(name, &value).with_context(|| format!("failed to store '{name}'"))?;
+    println!("Stored '{name}'");
+    Ok(())
+}
+
+fn delete_secret(name: &str, yes: bool) -> anyhow::Result<()> {
+    if !yes {
+        anyhow::ensure!(
+            io::stdin().is_terminal(),
+            "not a terminal, pass --yes to delete without confirmation"
+        );
+        eprint!("Delete '{name}'? [y/N] ");
+        io::stderr().flush()?;
+        let mut answer = String::new();
+        io::stdin().read_line(&mut answer)?;
+        if !matches!(answer.trim(), "y" | "Y" | "yes") {
+            println!("Aborted");
+            return Ok(());
+        }
+    }
+
+    delete_secret_from_keyring(name).with_context(|| format!("failed to delete '{name}'"))?;
+    println!("Deleted '{name}'");
+    Ok(())
 }
 
 fn print_vars() {
@@ -266,8 +325,8 @@ fn print_vars() {
 
 // If duplicate labels exist, the last entry will take precedence
 async fn process_env_file(path: &PathBuf) -> anyhow::Result<Vec<(String, String)>> {
-    let lines = read_env_file(path)
-        .with_context(|| format!("failed to read {}", path.display()))?;
+    let lines =
+        read_env_file(path).with_context(|| format!("failed to read {}", path.display()))?;
 
     let env_map = stream::iter(lines)
         .filter_map(|line| async move {

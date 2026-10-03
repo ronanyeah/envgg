@@ -11,6 +11,8 @@ envgg p -- tsx src/index.ts       # loads .env.production
 envgg --env-file .my-env -- npm start # loads a specific env file
 
 envgg secrets # list the secrets stored in the keyring
+envgg set NAME      # add or update a secret (prompts, or reads stdin if piped)
+envgg delete NAME   # delete a secret (-y to skip the confirmation)
 envgg open    # open the GUI manager
 envgg vars    # print the variable names used by the .env files in this folder
 envgg export  # write all secrets as plaintext to .env.bak (-f to overwrite)
