@@ -1,4 +1,6 @@
-use crate::{add_secret_to_keyring, delete_secret_from_keyring, get_secret_from_keyring};
+use crate::{
+    SecretInfo, add_secret_to_keyring, delete_secret_from_keyring, get_secret_from_keyring,
+};
 use gpui::{
     App, AppContext, Bounds, Context, Entity, FocusHandle, Focusable, InteractiveElement,
     IntoElement, ParentElement, Render, SharedString, Size, Styled, Window, WindowBounds,
@@ -19,6 +21,7 @@ use gpui_component_assets::Assets;
 struct SecretListItem {
     base: ListItem,
     secret: SharedString,
+    detail: Option<SharedString>,
     viewer: Entity<SecretsViewer>,
 }
 
@@ -26,14 +29,22 @@ impl SecretListItem {
     pub fn new(
         id: impl Into<gpui::ElementId>,
         secret: SharedString,
+        detail: Option<SharedString>,
         viewer: Entity<SecretsViewer>,
     ) -> Self {
         SecretListItem {
             secret,
+            detail,
             base: ListItem::new(id),
             viewer,
         }
     }
+}
+
+fn format_timestamp(time: chrono::DateTime<chrono::Utc>) -> String {
+    time.with_timezone(&chrono::Local)
+        .format("%d/%m/%Y %H:%M")
+        .to_string()
 }
 
 impl gpui_component::Selectable for SecretListItem {
@@ -51,6 +62,7 @@ impl gpui::RenderOnce for SecretListItem {
         let Self {
             base,
             secret,
+            detail,
             viewer,
         } = self;
         let name = secret.to_string();
@@ -79,6 +91,13 @@ impl gpui::RenderOnce for SecretListItem {
                     .child(
                         h_flex()
                             .gap_2()
+                            .items_center()
+                            .children(detail.map(|detail| {
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(detail)
+                            }))
                             .child({
                                 let name = name.clone();
                                 let viewer = viewer.clone();
@@ -106,40 +125,73 @@ impl gpui::RenderOnce for SecretListItem {
     }
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum SortKey {
+    Name,
+    Created,
+    Updated,
+}
+
 struct SecretListDelegate {
-    secrets: Vec<SharedString>,
-    filtered_secrets: Vec<SharedString>,
+    secrets: Vec<SecretInfo>,
+    filtered_secrets: Vec<SecretInfo>,
     query: SharedString,
+    sort_key: SortKey,
+    descending: bool,
     viewer: Entity<SecretsViewer>,
 }
 
 impl SecretListDelegate {
-    fn new(secrets: Vec<String>, viewer: Entity<SecretsViewer>) -> Self {
-        let secrets: Vec<_> = secrets.into_iter().map(SharedString::new).collect();
-        let filtered_secrets = secrets.clone();
-
-        Self {
+    fn new(secrets: Vec<SecretInfo>, viewer: Entity<SecretsViewer>) -> Self {
+        let mut delegate = Self {
+            filtered_secrets: Vec::new(),
             secrets,
-            filtered_secrets,
             query: "".into(),
+            sort_key: SortKey::Name,
+            descending: false,
             viewer,
-        }
+        };
+        delegate.filter("");
+        delegate
     }
 
-    fn update_secrets(&mut self, secrets: Vec<String>) {
-        self.secrets = secrets.into_iter().map(SharedString::new).collect();
+    fn update_secrets(&mut self, secrets: Vec<SecretInfo>) {
+        self.secrets = secrets;
         // Re-apply current filter
         self.filter(self.query.clone());
     }
 
     fn filter(&mut self, query: impl Into<SharedString>) {
         self.query = query.into();
+        let query = self.query.to_lowercase();
         self.filtered_secrets = self
             .secrets
             .iter()
-            .filter(|secret| secret.to_lowercase().contains(&self.query.to_lowercase()))
+            .filter(|secret| secret.name.to_lowercase().contains(&query))
             .cloned()
             .collect();
+        match self.sort_key {
+            SortKey::Name => self
+                .filtered_secrets
+                .sort_by_cached_key(|s| s.name.to_lowercase()),
+            SortKey::Created => self.filtered_secrets.sort_by_key(|s| s.created),
+            SortKey::Updated => self.filtered_secrets.sort_by_key(|s| s.updated),
+        }
+        if self.descending {
+            self.filtered_secrets.reverse();
+        }
+    }
+
+    /// Selecting the active key reverses it; selecting another starts
+    /// ascending for names and newest-first for dates.
+    fn sort_by(&mut self, key: SortKey) {
+        if self.sort_key == key {
+            self.descending = !self.descending;
+        } else {
+            self.sort_key = key;
+            self.descending = key != SortKey::Name;
+        }
+        self.filter(self.query.clone());
     }
 }
 
@@ -179,9 +231,19 @@ impl ListDelegate for SecretListDelegate {
         _: &mut Window,
         _cx: &mut Context<'_, ListState<SecretListDelegate>>,
     ) -> Option<Self::Item> {
-        self.filtered_secrets
-            .get(ix.row)
-            .map(|secret| SecretListItem::new(ix, secret.clone(), self.viewer.clone()))
+        self.filtered_secrets.get(ix.row).map(|secret| {
+            let detail = match self.sort_key {
+                SortKey::Name => None,
+                SortKey::Created => Some(format_timestamp(secret.created)),
+                SortKey::Updated => Some(format_timestamp(secret.updated)),
+            };
+            SecretListItem::new(
+                ix,
+                SharedString::from(secret.name.clone()),
+                detail.map(SharedString::from),
+                self.viewer.clone(),
+            )
+        })
     }
 
     fn loading(&self, _: &App) -> bool {
@@ -199,7 +261,7 @@ pub struct SecretsViewer {
 }
 
 impl SecretsViewer {
-    pub fn new(secrets: Vec<String>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(secrets: Vec<SecretInfo>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let viewer = cx.entity().clone();
         let delegate = SecretListDelegate::new(secrets, viewer);
         let secrets_list = cx.new(|cx| ListState::new(delegate, window, cx).searchable(true));
@@ -210,7 +272,7 @@ impl SecretsViewer {
         }
     }
 
-    pub fn view(secrets: Vec<String>, window: &mut Window, cx: &mut App) -> Entity<Self> {
+    pub fn view(secrets: Vec<SecretInfo>, window: &mut Window, cx: &mut App) -> Entity<Self> {
         cx.new(|cx| Self::new(secrets, window, cx))
     }
 
@@ -272,30 +334,17 @@ impl SecretsViewer {
     }
 
     fn handle_copy_secret(&mut self, name: String, window: &mut Window, cx: &mut Context<Self>) {
-        let task =
-            cx.spawn_in(
-                window,
-                async move |view_entity, window| match get_secret_from_keyring(&name) {
-                    Ok(value) => {
-                        _ = view_entity.update_in(window, move |_, window, cx| {
-                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(value));
-                            window.push_notification(
-                                format!("Secret '{}' copied to clipboard", name),
-                                cx,
-                            );
-                        });
-                    }
-                    Err(e) => {
-                        Self::show_error_notification(
-                            view_entity,
-                            window,
-                            format!("Error copying secret: {}", e),
-                        )
-                        .await;
-                    }
-                },
-            );
-        task.detach();
+        // Write inside the click event: Wayland ignores clipboard writes that
+        // arrive after the input event they belong to.
+        match get_secret_from_keyring(&name) {
+            Ok(value) => {
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(value));
+                window.push_notification(format!("Secret '{}' copied to clipboard", name), cx);
+            }
+            Err(e) => {
+                window.push_notification(format!("Error copying secret: {}", e), cx);
+            }
+        }
     }
 
     async fn refresh_secrets_with_notification(
@@ -304,7 +353,7 @@ impl SecretsViewer {
         secret_name: String,
         operation: &str,
     ) {
-        match crate::list_secret_labels() {
+        match crate::list_secrets() {
             Ok(secrets) => {
                 _ = view_entity.update_in(window, move |view_ref, window, cx| {
                     view_ref.refresh_secrets(secrets, cx);
@@ -325,7 +374,7 @@ impl SecretsViewer {
         }
     }
 
-    fn refresh_secrets(&mut self, secrets: Vec<String>, cx: &mut Context<Self>) {
+    fn refresh_secrets(&mut self, secrets: Vec<SecretInfo>, cx: &mut Context<Self>) {
         self.secrets_list.update(cx, |list, cx| {
             list.delegate_mut().update_secrets(secrets);
             cx.notify();
@@ -481,6 +530,35 @@ impl Focusable for SecretsViewer {
 
 impl Render for SecretsViewer {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let (active_key, descending) = {
+            let delegate = self.secrets_list.read(cx).delegate();
+            (delegate.sort_key, delegate.descending)
+        };
+        let sort_buttons = [
+            ("sort-name", "Name", SortKey::Name),
+            ("sort-created", "Created", SortKey::Created),
+            ("sort-updated", "Updated", SortKey::Updated),
+        ]
+        .map(|(id, label, key)| {
+            let mut button =
+                Button::new(id)
+                    .label(label)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.secrets_list.update(cx, |list, cx| {
+                            list.delegate_mut().sort_by(key);
+                            cx.notify();
+                        });
+                        cx.notify();
+                    }));
+            if key == active_key {
+                button = button.icon(if descending {
+                    IconName::ArrowDown
+                } else {
+                    IconName::ArrowUp
+                });
+            }
+            button
+        });
         v_flex()
             .track_focus(&self.focus_handle)
             .size_full()
@@ -492,7 +570,7 @@ impl Render for SecretsViewer {
                     .items_center()
                     .child(div().text_xl().font_bold().child("envgg"))
                     .child(
-                        h_flex().gap_2().child(
+                        h_flex().gap_2().children(sort_buttons).child(
                             Button::new("add-secret-btn")
                                 .icon(IconName::Plus)
                                 .label("Add Secret")
@@ -546,7 +624,7 @@ impl Render for AppRoot {
 }
 
 pub async fn open_secrets_viewer() {
-    let secrets = match crate::list_secret_labels() {
+    let secrets = match crate::list_secrets() {
         Ok(secrets) => secrets,
         Err(e) => {
             panic!("Error loading secrets: {}", e);

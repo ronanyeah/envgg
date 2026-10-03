@@ -1,7 +1,7 @@
 use clap::Parser;
 use envgg::{
-    EnvLine, get_env_var_names_from_file, get_secret_from_keyring, list_secret_labels,
-    read_env_file, ui,
+    EnvLine, export_secrets, get_env_var_names_from_file, get_secret_from_keyring,
+    list_secret_labels, read_env_file, ui,
 };
 use futures::stream::{self, StreamExt};
 use std::collections::HashMap;
@@ -21,6 +21,24 @@ struct Cli {
 
     #[arg(short = 'o', long = "open", help = "Open the GUI manager")]
     open: bool,
+
+    #[arg(
+        short = 'e',
+        long = "export",
+        value_name = "FILE",
+        num_args = 0..=1,
+        default_missing_value = ".env.bak",
+        help = "Write all secrets as plaintext to FILE (default: .env.bak)"
+    )]
+    export: Option<PathBuf>,
+
+    #[arg(
+        short = 'f',
+        long = "force",
+        requires = "export",
+        help = "Overwrite the export file if it already exists"
+    )]
+    force: bool,
 
     #[arg(
         short = 'c',
@@ -72,6 +90,12 @@ async fn main() -> anyhow::Result<()> {
                 anyhow::bail!("Error listing secrets: {}", e);
             }
         }
+    }
+
+    if let Some(path) = cli.export {
+        let count = export_secrets(&path, cli.force)?;
+        println!("Exported {} secret(s) to {}", count, path.display());
+        return Ok(());
     }
 
     // Handle open flag

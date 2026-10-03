@@ -1,9 +1,10 @@
 use anyhow::Context;
+use chrono::{DateTime, Utc};
 use indexmap::IndexSet;
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self, BufRead};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const TAG: &str = "envgg";
 
@@ -108,10 +109,61 @@ fn open_quote(line: &str) -> Option<char> {
     (!value[1..].contains(quote)).then_some(quote)
 }
 
+#[derive(Clone)]
+pub struct SecretInfo {
+    pub name: String,
+    pub created: DateTime<Utc>,
+    pub updated: DateTime<Utc>,
+    pub description: String,
+}
+
+// Stored as unix seconds
+pub fn stamp_secret(
+    entry: &keyring_core::Entry,
+    created: DateTime<Utc>,
+    updated: DateTime<Utc>,
+    description: &str,
+) -> anyhow::Result<()> {
+    let (created, updated) = (
+        created.timestamp().to_string(),
+        updated.timestamp().to_string(),
+    );
+    entry.update_attributes(&HashMap::from([
+        ("created", created.as_str()),
+        ("updated", updated.as_str()),
+        ("description", description),
+    ]))?;
+    Ok(())
+}
+
+fn attribute<'a>(attributes: &'a HashMap<String, String>, key: &str) -> anyhow::Result<&'a String> {
+    attributes
+        .get(key)
+        .with_context(|| format!("missing '{key}'"))
+}
+
+pub fn parse_time(
+    attributes: &HashMap<String, String>,
+    key: &str,
+) -> anyhow::Result<DateTime<Utc>> {
+    DateTime::from_timestamp(attribute(attributes, key)?.parse()?, 0)
+        .with_context(|| format!("'{key}' out of range"))
+}
+
 pub fn add_secret_to_keyring(key: &str, value: &str) -> anyhow::Result<()> {
     let entry = keyring_core::Entry::new(TAG, key)?;
+    let now = Utc::now();
+    // Read before overwriting, since set_password may reset attributes
+    // A new secret has no entry yet, so no attributes
+    let (created, description) = match entry.get_attributes() {
+        Ok(attributes) => (
+            parse_time(&attributes, "created")?,
+            attribute(&attributes, "description")?.clone(),
+        ),
+        Err(_) => (now, String::new()),
+    };
     entry.set_password(value)?;
-    Ok(())
+    stamp_secret(&entry, created, now, &description)
 }
 
 pub fn delete_secret_from_keyring(key: &str) -> anyhow::Result<()> {
@@ -120,32 +172,100 @@ pub fn delete_secret_from_keyring(key: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn list_secret_labels() -> anyhow::Result<Vec<String>> {
-    let search_params = HashMap::from([("service", TAG)]);
-
-    let items = keyring_core::Entry::search(&search_params)?;
-
-    let mut secret_names = items
+fn search_attributes() -> anyhow::Result<Vec<HashMap<String, String>>> {
+    keyring_core::Entry::search(&HashMap::from([("service", TAG)]))?
         .iter()
-        .map(|item| {
-            let attributes = item.get_attributes()?;
-            // Linux/Windows use "username", macOS uses "account"
-            let name = attributes
-                .get("username")
-                .or_else(|| attributes.get("account"))
-                .context("no key attribute")?;
-            Ok::<_, anyhow::Error>(name.clone())
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+        .map(|item| Ok(item.get_attributes()?))
+        .collect()
+}
 
-    secret_names.sort();
-    Ok(secret_names)
+fn secret_name(attributes: &HashMap<String, String>) -> anyhow::Result<String> {
+    // Linux/Windows use "username", macOS uses "account"
+    let name = attributes
+        .get("username")
+        .or_else(|| attributes.get("account"))
+        .context("no key attribute")?;
+    Ok(name.clone())
+}
+
+/// All secrets with timestamps, sorted by name. Fails if any secret lacks them.
+pub fn list_secrets() -> anyhow::Result<Vec<SecretInfo>> {
+    let mut secrets = search_attributes()?
+        .iter()
+        .map(|attributes| {
+            Ok(SecretInfo {
+                name: secret_name(attributes)?,
+                created: parse_time(attributes, "created")?,
+                updated: parse_time(attributes, "updated")?,
+                description: attribute(attributes, "description")?.clone(),
+            })
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+
+    secrets.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(secrets)
+}
+
+/// Secret names only, sorted. Doesn't need timestamps.
+pub fn list_secret_labels() -> anyhow::Result<Vec<String>> {
+    let mut names = search_attributes()?
+        .iter()
+        .map(secret_name)
+        .collect::<anyhow::Result<Vec<_>>>()?;
+
+    names.sort();
+    Ok(names)
 }
 
 pub fn get_secret_from_keyring(target: &str) -> anyhow::Result<String> {
     let entry = keyring_core::Entry::new(TAG, target)?;
     let password = entry.get_password()?;
     Ok(password)
+}
+
+// Quoted so the output reads back through `parse_env_line`, which has no escapes
+fn quote_env_value(key: &str, value: &str) -> anyhow::Result<String> {
+    if !value.contains('"') {
+        Ok(format!("\"{value}\""))
+    } else if !value.contains('\'') {
+        Ok(format!("'{value}'"))
+    } else {
+        anyhow::bail!("'{key}' contains both quote kinds and can't be written to an env file")
+    }
+}
+
+/// Writes every secret as `KEY="value"` to `path`, returning the count.
+/// Refuses to overwrite an existing file unless `force` is set.
+pub fn export_secrets(path: &Path, force: bool) -> anyhow::Result<usize> {
+    let mut contents = String::new();
+    let names = list_secret_labels()?;
+    for name in &names {
+        let value = get_secret_from_keyring(name)?;
+        contents.push_str(&format!("{name}={}\n", quote_env_value(name, &value)?));
+    }
+
+    let mut options = fs::OpenOptions::new();
+    options.write(true);
+    if force {
+        options.create(true).truncate(true);
+    } else {
+        options.create_new(true);
+    }
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+
+    let mut file = options.open(path).map_err(|e| match e.kind() {
+        io::ErrorKind::AlreadyExists => {
+            anyhow::anyhow!(
+                "{} already exists, use --force to overwrite",
+                path.display()
+            )
+        }
+        _ => e.into(),
+    })?;
+    io::Write::write_all(&mut file, contents.as_bytes())?;
+
+    Ok(names.len())
 }
 
 #[cfg(test)]
