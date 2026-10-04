@@ -5,12 +5,45 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::{self, BufRead};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 const TAG: &str = "envgg";
 
 mod cli;
 
 pub use cli::{OpenGui, run};
+
+// Connected on first use, so commands that never touch a secret work on machines
+// with no keyring service
+fn ensure_keyring() -> anyhow::Result<()> {
+    static CONNECTION: OnceLock<Result<(), String>> = OnceLock::new();
+    CONNECTION
+        .get_or_init(|| {
+            connect_keyring()
+                .context("failed to connect to the system keyring")
+                .map_err(|e| format!("{e:#}"))
+        })
+        .clone()
+        .map_err(anyhow::Error::msg)
+}
+
+fn connect_keyring() -> anyhow::Result<()> {
+    #[cfg(target_os = "linux")]
+    keyring_core::set_default_store(dbus_secret_service_keyring_store::Store::new()?);
+
+    #[cfg(target_os = "macos")]
+    keyring_core::set_default_store(apple_native_keyring_store::keychain::Store::new()?);
+
+    #[cfg(target_os = "windows")]
+    keyring_core::set_default_store(windows_native_keyring_store::store::Store::new()?);
+
+    Ok(())
+}
+
+fn entry(key: &str) -> anyhow::Result<keyring_core::Entry> {
+    ensure_keyring()?;
+    Ok(keyring_core::Entry::new(TAG, key)?)
+}
 
 pub enum EnvLine {
     Comment,
@@ -150,7 +183,7 @@ fn parse_time(attributes: &HashMap<String, String>, key: &str) -> anyhow::Result
 }
 
 pub fn add_secret_to_keyring(key: &str, value: &str) -> anyhow::Result<()> {
-    let entry = keyring_core::Entry::new(TAG, key)?;
+    let entry = entry(key)?;
     let now = Utc::now();
     // Read before overwriting, since set_password may reset attributes
     // A new secret has no entry yet, so no attributes
@@ -166,7 +199,7 @@ pub fn add_secret_to_keyring(key: &str, value: &str) -> anyhow::Result<()> {
 }
 
 pub fn delete_secret_from_keyring(key: &str) -> anyhow::Result<()> {
-    let entry = keyring_core::Entry::new(TAG, key)?;
+    let entry = entry(key)?;
     entry.delete_credential()?;
     Ok(())
 }
@@ -179,6 +212,7 @@ pub fn is_valid_env_var_name(name: &str) -> bool {
 }
 
 fn search_attributes() -> anyhow::Result<Vec<HashMap<String, String>>> {
+    ensure_keyring()?;
     keyring_core::Entry::search(&HashMap::from([("service", TAG)]))?
         .iter()
         .map(|item| Ok(item.get_attributes()?))
@@ -224,8 +258,7 @@ pub fn list_secret_labels() -> anyhow::Result<Vec<String>> {
 }
 
 pub fn get_secret_from_keyring(target: &str) -> anyhow::Result<String> {
-    let entry = keyring_core::Entry::new(TAG, target)?;
-    let password = entry.get_password()?;
+    let password = entry(target)?.get_password()?;
     Ok(password)
 }
 

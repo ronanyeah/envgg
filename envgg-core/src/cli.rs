@@ -166,24 +166,6 @@ pub fn run(open: Option<OpenGui>) -> ExitCode {
 }
 
 fn dispatch(command: Option<Cmd>, run_args: RunArgs, open: Option<OpenGui>) -> anyhow::Result<()> {
-    // Doesn't need the keyring, so it also works where none is available
-    if matches!(command, Some(Cmd::MarkdownHelp)) {
-        let options = clap_markdown::MarkdownOptions::new()
-            .title("envgg".to_string())
-            .show_footer(false);
-        print!("{}", clap_markdown::help_markdown_custom::<Cli>(&options));
-        return Ok(());
-    }
-
-    #[cfg(target_os = "linux")]
-    keyring_core::set_default_store(dbus_secret_service_keyring_store::Store::new()?);
-
-    #[cfg(target_os = "macos")]
-    keyring_core::set_default_store(apple_native_keyring_store::keychain::Store::new()?);
-
-    #[cfg(target_os = "windows")]
-    keyring_core::set_default_store(windows_native_keyring_store::store::Store::new()?);
-
     match command {
         None => run_command(run_args),
         Some(Cmd::Run(args)) => run_command(args),
@@ -210,7 +192,13 @@ fn dispatch(command: Option<Cmd>, run_args: RunArgs, open: Option<OpenGui>) -> a
             println!("Exported {count} secret(s) to {}", file.display());
             Ok(())
         }
-        Some(Cmd::MarkdownHelp) => unreachable!("handled before the keyring is set up"),
+        Some(Cmd::MarkdownHelp) => {
+            let options = clap_markdown::MarkdownOptions::new()
+                .title("envgg".to_string())
+                .show_footer(false);
+            print!("{}", clap_markdown::help_markdown_custom::<Cli>(&options));
+            Ok(())
+        }
     }
 }
 
@@ -335,35 +323,24 @@ fn process_env_file(path: &PathBuf) -> anyhow::Result<Vec<(String, String)>> {
     let lines =
         read_env_file(path).with_context(|| format!("failed to read {}", path.display()))?;
 
-    let env_map: HashMap<_, _> = lines
+    let env_map = lines
         .into_iter()
         .filter_map(|line| match line {
             EnvLine::Comment => None,
-            EnvLine::Direct { key, value } => Some((key, value)),
-            EnvLine::Alias { key, keyring_key } => match get_secret_from_keyring(&keyring_key) {
-                Ok(secret_value) => Some((key, secret_value)),
-                Err(e) => {
-                    eprintln!(
-                        "Warning: Failed to get secret for '{}' from keyring: {}",
-                        keyring_key, e
-                    );
-                    eprintln!("Skipping environment variable '{}'.", key);
-                    None
-                }
-            },
-            EnvLine::Lookup { key } => match get_secret_from_keyring(&key) {
-                Ok(value) => Some((key, value)),
-                Err(e) => {
-                    eprintln!(
-                        "Warning: Failed to get secret for '{}' from keyring: {}",
-                        key, e
-                    );
-                    eprintln!("Skipping this environment variable.");
-                    None
-                }
-            },
+            EnvLine::Direct { key, value } => Some(Ok((key, value))),
+            EnvLine::Alias { key, keyring_key } => Some(load_secret(key, &keyring_key)),
+            EnvLine::Lookup { key } => {
+                let secret_name = key.clone();
+                Some(load_secret(key, &secret_name))
+            }
         })
-        .collect();
+        .collect::<anyhow::Result<HashMap<_, _>>>()?;
 
     Ok(env_map.into_iter().collect())
+}
+
+fn load_secret(key: String, secret_name: &str) -> anyhow::Result<(String, String)> {
+    let value = get_secret_from_keyring(secret_name)
+        .with_context(|| format!("failed to load secret '{secret_name}' for '{key}'"))?;
+    Ok((key, value))
 }
