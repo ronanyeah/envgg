@@ -9,7 +9,7 @@ This document contains the help content for the `envgg` command-line program.
 * [`envgg secrets`↴](#envgg-secrets)
 * [`envgg set`↴](#envgg-set)
 * [`envgg delete`↴](#envgg-delete)
-* [`envgg open`↴](#envgg-open)
+* [`envgg gui`↴](#envgg-gui)
 * [`envgg vars`↴](#envgg-vars)
 * [`envgg export`↴](#envgg-export)
 
@@ -39,7 +39,7 @@ Exit codes when running a command:
 * `secrets` — List the secrets stored in the `envgg` namespace of the system keyring
 * `set` — Add or update a secret (the value is prompted for, or read from stdin if piped)
 * `delete` — Delete a secret
-* `open` — Open the GUI manager
+* `gui` — Open the GUI manager
 * `vars` — Print the variable names used by the .env files in the current folder
 * `export` — Write all secrets as plaintext to a file
 
@@ -113,11 +113,11 @@ Delete a secret
 
 
 
-## `envgg open`
+## `envgg gui`
 
 Open the GUI manager
 
-**Usage:** `envgg open`
+**Usage:** `envgg gui`
 
 
 

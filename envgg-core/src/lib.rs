@@ -8,7 +8,9 @@ use std::path::{Path, PathBuf};
 
 const TAG: &str = "envgg";
 
-pub mod ui;
+mod cli;
+
+pub use cli::{OpenGui, run};
 
 pub enum EnvLine {
     Comment,

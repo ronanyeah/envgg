@@ -1,0 +1,23 @@
+[package]
+name = "envgg-headless"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+description = "envgg without the GUI manager, for machines with no display libraries"
+
+[[bin]]
+name = "envgg"
+path = "src/main.rs"
+
+[dependencies]
+envgg-core = { path = "../envgg-core" }
+
+# Release archives hold the binary at their root
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/envgg-headless-{ target }.tar.gz"
+pkg-fmt = "tgz"
+bin-dir = "{ bin }{ binary-ext }"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-url = "{ repo }/releases/download/v{ version }/envgg-headless-{ target }.zip"
+pkg-fmt = "zip"

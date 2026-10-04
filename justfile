@@ -1,2 +1,2 @@
 generate-cli-doc:
-    cargo run -- markdown-help > docs/CLI.md
+    cargo run -q -p envgg-headless -- markdown-help > docs/CLI.md

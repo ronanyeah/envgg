@@ -1,4 +1,5 @@
-use crate::{
+use anyhow::Context as _;
+use envgg_core::{
     SecretInfo, add_secret_to_keyring, delete_secret_from_keyring, get_secret_from_keyring,
 };
 use gpui::{
@@ -353,7 +354,7 @@ impl SecretsViewer {
         secret_name: String,
         operation: &str,
     ) {
-        match crate::list_secrets() {
+        match envgg_core::list_secrets() {
             Ok(secrets) => {
                 _ = view_entity.update_in(window, move |view_ref, window, cx| {
                     view_ref.refresh_secrets(secrets, cx);
@@ -449,7 +450,7 @@ impl SecretsViewer {
                     let value = value_input.read(cx).text().to_string();
 
 
-                    if !crate::is_valid_env_var_name(&key) {
+                    if !envgg_core::is_valid_env_var_name(&key) {
                         window.push_notification(
                             "Key must be in SCREAMING_CASE (uppercase letters, numbers, and underscores only, starting with a letter)",
                             cx,
@@ -600,13 +601,8 @@ impl Render for AppRoot {
     }
 }
 
-pub async fn open_secrets_viewer() {
-    let secrets = match crate::list_secrets() {
-        Ok(secrets) => secrets,
-        Err(e) => {
-            panic!("Error loading secrets: {}", e);
-        }
-    };
+pub fn open_secrets_viewer() -> anyhow::Result<()> {
+    let secrets = envgg_core::list_secrets().context("failed to load secrets")?;
 
     let app = gpui::Application::new().with_assets(Assets);
 
@@ -658,4 +654,6 @@ pub async fn open_secrets_viewer() {
         })
         .detach();
     });
+
+    Ok(())
 }

@@ -1,41 +1,8 @@
-[package]
-name = "envgg"
+[workspace]
+resolver = "3"
+members = ["envgg", "envgg-core", "envgg-headless"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
-description = "Run commands with environment variables from .env files, with secrets resolved from the system keyring"
 repository = "https://github.com/ronanyeah/envgg"
-
-[dependencies]
-anyhow = "1.0.104"
-chrono = { version = "0.4", default-features = false, features = ["clock"] }
-clap = { version = "4.6.7", features = ["derive"] }
-clap-markdown = "0.1.5"
-futures = "0.3.34"
-gpui = "0.2.2"
-gpui-component = "0.5.1"
-gpui-component-assets = "0.5.1"
-indexmap = "2.14.2"
-keyring-core = "1.0.0"
-rpassword = "7.5.4"
-tokio = { version = "1.53.2", features = ["full"] }
-
-[target.'cfg(target_os = "macos")'.dependencies]
-apple-native-keyring-store = { version = "1.0", features = ["keychain"] }
-
-[target.'cfg(target_os = "linux")'.dependencies]
-dbus-secret-service-keyring-store = { version = "1.0", features = [
-  "crypto-rust",
-] }
-
-[target.'cfg(target_os = "windows")'.dependencies]
-windows-native-keyring-store = "1.1"
-
-# Release archives hold the binary at their root
-[package.metadata.binstall]
-pkg-url = "{ repo }/releases/download/v{ version }/envgg-{ target }.tar.gz"
-pkg-fmt = "tgz"
-bin-dir = "{ bin }{ binary-ext }"
-
-[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
-pkg-url = "{ repo }/releases/download/v{ version }/envgg-{ target }.zip"
-pkg-fmt = "zip"

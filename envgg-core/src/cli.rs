@@ -1,18 +1,21 @@
-use anyhow::Context;
-use clap::{Args, Parser, Subcommand, ValueEnum};
-use envgg::{
+use crate::{
     EnvLine, add_secret_to_keyring, delete_secret_from_keyring, export_secrets,
     get_env_var_names_from_file, get_secret_from_keyring, is_valid_env_var_name,
-    list_secret_labels, read_env_file, ui,
+    list_secret_labels, read_env_file,
 };
-use futures::stream::{self, StreamExt};
+use anyhow::Context;
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::collections::HashMap;
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::PathBuf;
 use std::process::{Command, ExitCode};
 
+/// Opens the GUI manager, for builds that include one
+pub type OpenGui = fn() -> anyhow::Result<()>;
+
 #[derive(Parser)]
 #[command(
+    name = "envgg",
     version,
     about,
     args_conflicts_with_subcommands = true,
@@ -78,7 +81,7 @@ enum Cmd {
     },
 
     /// Open the GUI manager
-    Open,
+    Gui,
 
     /// Print the variable names used by the .env files in the current folder
     Vars,
@@ -94,7 +97,7 @@ enum Cmd {
         force: bool,
     },
 
-    /// Print this CLI's help as Markdown, used to generate README.md
+    /// Print this CLI's help as Markdown, used to generate docs/CLI.md
     #[command(hide = true)]
     MarkdownHelp,
 }
@@ -147,12 +150,13 @@ fn exit_code(error: &anyhow::Error, runs_command: bool) -> u8 {
     }
 }
 
-#[tokio::main]
-async fn main() -> ExitCode {
+/// Parses the command line and runs it. `open` is the GUI manager, or `None`
+/// for a build without one.
+pub fn run(open: Option<OpenGui>) -> ExitCode {
     let Cli { command, run } = Cli::parse();
     let runs_command = matches!(command, None | Some(Cmd::Run(_)));
 
-    match dispatch(command, run).await {
+    match dispatch(command, run, open) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("Error: {error:?}");
@@ -161,7 +165,7 @@ async fn main() -> ExitCode {
     }
 }
 
-async fn dispatch(command: Option<Cmd>, run_args: RunArgs) -> anyhow::Result<()> {
+fn dispatch(command: Option<Cmd>, run_args: RunArgs, open: Option<OpenGui>) -> anyhow::Result<()> {
     // Doesn't need the keyring, so it also works where none is available
     if matches!(command, Some(Cmd::MarkdownHelp)) {
         let options = clap_markdown::MarkdownOptions::new()
@@ -170,6 +174,7 @@ async fn dispatch(command: Option<Cmd>, run_args: RunArgs) -> anyhow::Result<()>
         print!("{}", clap_markdown::help_markdown_custom::<Cli>(&options));
         return Ok(());
     }
+
     #[cfg(target_os = "linux")]
     keyring_core::set_default_store(dbus_secret_service_keyring_store::Store::new()?);
 
@@ -180,8 +185,8 @@ async fn dispatch(command: Option<Cmd>, run_args: RunArgs) -> anyhow::Result<()>
     keyring_core::set_default_store(windows_native_keyring_store::store::Store::new()?);
 
     match command {
-        None => run(run_args).await,
-        Some(Cmd::Run(args)) => run(args).await,
+        None => run_command(run_args),
+        Some(Cmd::Run(args)) => run_command(args),
         Some(Cmd::Secrets) => {
             for label in list_secret_labels().context("failed to list secrets")? {
                 println!("{label}");
@@ -190,10 +195,12 @@ async fn dispatch(command: Option<Cmd>, run_args: RunArgs) -> anyhow::Result<()>
         }
         Some(Cmd::Set { name }) => set_secret(&name),
         Some(Cmd::Delete { name, yes }) => delete_secret(&name, yes),
-        Some(Cmd::Open) => {
-            ui::open_secrets_viewer().await;
-            Ok(())
-        }
+        Some(Cmd::Gui) => match open {
+            Some(open) => open(),
+            None => anyhow::bail!(
+                "this build has no GUI manager, install the full `envgg` package to use `gui`"
+            ),
+        },
         Some(Cmd::Vars) => {
             print_vars();
             Ok(())
@@ -207,7 +214,7 @@ async fn dispatch(command: Option<Cmd>, run_args: RunArgs) -> anyhow::Result<()>
     }
 }
 
-async fn run(RunArgs { env, env_file, cmd }: RunArgs) -> anyhow::Result<()> {
+fn run_command(RunArgs { env, env_file, cmd }: RunArgs) -> anyhow::Result<()> {
     let (program, args) = cmd
         .split_first()
         .context("no command specified, expected: envgg [ENV] -- <CMD>...")?;
@@ -222,7 +229,7 @@ async fn run(RunArgs { env, env_file, cmd }: RunArgs) -> anyhow::Result<()> {
         "env file '{}' not found",
         env_path.display()
     );
-    let env_vars = process_env_file(&env_path).await?;
+    let env_vars = process_env_file(&env_path)?;
 
     let mut command = Command::new(program);
     command.args(args).envs(env_vars);
@@ -324,43 +331,39 @@ fn print_vars() {
 }
 
 // If duplicate labels exist, the last entry will take precedence
-async fn process_env_file(path: &PathBuf) -> anyhow::Result<Vec<(String, String)>> {
+fn process_env_file(path: &PathBuf) -> anyhow::Result<Vec<(String, String)>> {
     let lines =
         read_env_file(path).with_context(|| format!("failed to read {}", path.display()))?;
 
-    let env_map = stream::iter(lines)
-        .filter_map(|line| async move {
-            match line {
-                EnvLine::Comment => None,
-                EnvLine::Direct { key, value } => Some((key, value)),
-                EnvLine::Alias { key, keyring_key } => {
-                    match get_secret_from_keyring(&keyring_key) {
-                        Ok(secret_value) => Some((key, secret_value)),
-                        Err(e) => {
-                            eprintln!(
-                                "Warning: Failed to get secret for '{}' from keyring: {}",
-                                keyring_key, e
-                            );
-                            eprintln!("Skipping environment variable '{}'.", key);
-                            None
-                        }
-                    }
+    let env_map: HashMap<_, _> = lines
+        .into_iter()
+        .filter_map(|line| match line {
+            EnvLine::Comment => None,
+            EnvLine::Direct { key, value } => Some((key, value)),
+            EnvLine::Alias { key, keyring_key } => match get_secret_from_keyring(&keyring_key) {
+                Ok(secret_value) => Some((key, secret_value)),
+                Err(e) => {
+                    eprintln!(
+                        "Warning: Failed to get secret for '{}' from keyring: {}",
+                        keyring_key, e
+                    );
+                    eprintln!("Skipping environment variable '{}'.", key);
+                    None
                 }
-                EnvLine::Lookup { key } => match get_secret_from_keyring(&key) {
-                    Ok(value) => Some((key, value)),
-                    Err(e) => {
-                        eprintln!(
-                            "Warning: Failed to get secret for '{}' from keyring: {}",
-                            key, e
-                        );
-                        eprintln!("Skipping this environment variable.");
-                        None
-                    }
-                },
-            }
+            },
+            EnvLine::Lookup { key } => match get_secret_from_keyring(&key) {
+                Ok(value) => Some((key, value)),
+                Err(e) => {
+                    eprintln!(
+                        "Warning: Failed to get secret for '{}' from keyring: {}",
+                        key, e
+                    );
+                    eprintln!("Skipping this environment variable.");
+                    None
+                }
+            },
         })
-        .collect::<HashMap<_, _>>()
-        .await;
+        .collect();
 
     Ok(env_map.into_iter().collect())
 }

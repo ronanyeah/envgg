@@ -1,0 +1,24 @@
+[package]
+name = "envgg"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+description = "envgg with the GUI manager: run commands with environment variables from .env files, with secrets resolved from the system keyring"
+
+[dependencies]
+anyhow = "1.0.104"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+envgg-core = { path = "../envgg-core" }
+gpui = "0.2.2"
+gpui-component = "0.5.1"
+gpui-component-assets = "0.5.1"
+
+# Release archives hold the binary at their root
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/envgg-{ target }.tar.gz"
+pkg-fmt = "tgz"
+bin-dir = "{ bin }{ binary-ext }"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-url = "{ repo }/releases/download/v{ version }/envgg-{ target }.zip"
+pkg-fmt = "zip"

@@ -12,14 +12,22 @@ jobs:
   build:
     strategy:
       matrix:
+        # envgg is the CLI with the GUI manager, envgg-headless is the CLI alone.
+        # Both build a binary called `envgg`.
+        package: [envgg, envgg-headless]
+        platform: [linux, macos-x86_64, macos-aarch64, windows]
         include:
-          - os: ubuntu-22.04
+          - platform: linux
+            os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-          - os: macos-latest
+          - platform: macos-x86_64
+            os: macos-latest
             target: x86_64-apple-darwin
-          - os: macos-latest
+          - platform: macos-aarch64
+            os: macos-latest
             target: aarch64-apple-darwin
-          - os: windows-latest
+          - platform: windows
+            os: windows-latest
             target: x86_64-pc-windows-msvc
 
     runs-on: ${{ matrix.os }}
@@ -27,8 +35,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install Linux dependencies
-        if: runner.os == 'Linux'
+      - name: Install Linux dependencies (headless)
+        if: runner.os == 'Linux' && matrix.package == 'envgg-headless'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libdbus-1-dev
+
+      - name: Install Linux dependencies (GUI)
+        if: runner.os == 'Linux' && matrix.package == 'envgg'
         run: |
           sudo apt-get update
           sudo apt-get install -y libdbus-1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev
@@ -39,24 +53,24 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Build
-        run: cargo build --release --locked --target ${{ matrix.target }}
+        run: cargo build --release --locked --target ${{ matrix.target }} --package ${{ matrix.package }}
 
       - name: Package (Unix)
         if: runner.os != 'Windows'
         run: |
           mkdir dist
-          tar -czf dist/envgg-${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release envgg
+          tar -czf dist/${{ matrix.package }}-${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release envgg
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           New-Item -ItemType Directory dist
-          Compress-Archive -Path target\${{ matrix.target }}\release\envgg.exe -DestinationPath dist\envgg-${{ matrix.target }}.zip
+          Compress-Archive -Path target\${{ matrix.target }}\release\envgg.exe -DestinationPath dist\${{ matrix.package }}-${{ matrix.target }}.zip
 
       - uses: actions/upload-artifact@v7
         with:
-          name: envgg-${{ matrix.target }}
+          name: ${{ matrix.package }}-${{ matrix.target }}
           path: dist/*
           retention-days: 30
 

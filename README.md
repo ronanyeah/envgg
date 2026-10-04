@@ -4,13 +4,19 @@ Run commands with environment variables from `.env` files, with secrets resolved
 
 ## Install
 
-With [cargo-binstall](https://github.com/cargo-bins/cargo-binstall):
+Both options install a command called `envgg`. Choose one, using [cargo-binstall](https://github.com/cargo-bins/cargo-binstall):
 
 ```bash
+# CLI and GUI manager (`envgg gui`), for desktops
 cargo binstall --git https://github.com/ronanyeah/envgg envgg
+
+# CLI only, for servers, containers and CI without display libraries
+cargo binstall --git https://github.com/ronanyeah/envgg envgg-headless
 ```
 
-Or download an archive for your platform from the [releases page](https://github.com/ronanyeah/envgg/releases).
+Or download an archive for your platform from the [releases page](https://github.com/ronanyeah/envgg/releases): `envgg-<target>` is the full build and `envgg-headless-<target>` is the CLI only.
+
+The headless build supports everything except `envgg gui`.
 
 ## Usage
 
@@ -43,7 +49,7 @@ If the command can't be run, envgg exits with 127 (not found) or 126 (not execut
 envgg secrets      # list the secrets in the keyring
 envgg set NAME     # add or update a secret
 envgg delete NAME  # delete a secret (-y to skip the confirmation)
-envgg open         # open the GUI manager
+envgg gui          # open the GUI manager
 ```
 
 `set` prompts for the value, or reads it from stdin when piped (`printf %s "$VALUE" | envgg set NAME`). The value is never taken as an argument, so it stays out of your shell history.
